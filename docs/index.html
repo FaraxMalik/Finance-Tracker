@@ -355,7 +355,7 @@
             if (!apk) throw new Error('none');
             var mb = (apk.size / 1048576).toFixed(0) + ' MB';
             var date = new Date(rel.published_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
-            meta.textContent = rel.tag_name + ' · ' + mb + ' · ' + date;
+            meta.textContent = rel.tag_name + ' · ' + mb + ' · ' + date + ' · Android 7 or newer';
           })
           .catch(function () {
             meta.textContent = 'The first release is on its way. Check back soon.';

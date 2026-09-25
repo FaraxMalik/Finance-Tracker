@@ -8,7 +8,7 @@ Everything is stored on the phone: there is no server, no account and no bank co
 
 **[Get the APK](https://faraxmalik.github.io/Finance-Tracker/)** (or grab `finance-tracker.apk` from the
 [latest release](https://github.com/FaraxMalik/Finance-Tracker/releases/latest)) and open it on your Android phone.
-It is not on the Play Store, so Android will ask you to allow installing from your browser or Files app.
+It is not on the Play Store, so Android will ask you to allow installing from your browser or Files app. Requires Android 7 or newer. The only permissions it declares are vibration (haptics) and `INTERNET` (unused: the app makes no network requests).
 
 ## Features
 
