@@ -59,7 +59,9 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      # The runner image already includes the Android SDK; just make sure Gradle may download extra components.
+      - name: Accept Android SDK licenses
+        run: yes | "$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | sort -V | tail -1)" --licenses > /dev/null || true
 
       - uses: gradle/actions/setup-gradle@v4
 
