@@ -28,7 +28,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/finance-tracker.p12
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       # Must go up with every build, or Android will not install it over the previous one.
@@ -45,7 +44,10 @@ jobs:
             if [ -z "${!name}" ]; then echo "::error::Missing repository secret for $name"; missing=1; fi
           done
           [ "$missing" = 0 ] || exit 1
-          echo "$KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          keystore="$RUNNER_TEMP/finance-tracker.p12"
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          # Later steps (the signing plugin during prebuild, and Gradle) read the path from here.
+          echo "ANDROID_KEYSTORE_PATH=$keystore" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@v4
         with:
@@ -78,7 +80,7 @@ jobs:
       - name: Check it is signed with our key (not the public debug key)
         run: |
           apk=android/app/build/outputs/apk/release/app-release.apk
-          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          apksigner=$(find "$ANDROID_HOME"/build-tools -name apksigner | sort -V | tail -1)
           "$apksigner" verify --print-certs "$apk" | tee certs.txt
           if grep -qi "Android Debug" certs.txt; then echo "::error::APK is signed with the debug key"; exit 1; fi
 
