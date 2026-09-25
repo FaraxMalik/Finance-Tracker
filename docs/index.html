@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Finance Tracker: a quiet, private expense tracker for Android</title>
+    <meta
+      name="description"
+      content="Track your spending by category and bank, keep an eye on your credit card, and see where the month went. Everything stays on your phone. Free APK download."
+    />
+    <meta name="theme-color" content="#F5F4F0" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0E0E0D" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" href="favicon.png" />
+    <link rel="apple-touch-icon" href="icon.png" />
+    <meta property="og:title" content="Finance Tracker" />
+    <meta property="og:description" content="A quiet, private expense tracker for Android. Everything stays on your phone." />
+    <meta property="og:image" content="icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Geist+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #f5f4f0;
+        --surface: #ffffff;
+        --border: #e4e1da;
+        --text: #181712;
+        --dim: #7b776d;
+        --accent: #181712;
+        --on-accent: #f5f4f0;
+        --serif: 'Fraunces', Georgia, serif;
+        --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0e0e0d;
+          --surface: #171715;
+          --border: #2b2a27;
+          --text: #f1efea;
+          --dim: #98948a;
+          --accent: #f1efea;
+          --on-accent: #0e0e0d;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        -webkit-text-size-adjust: 100%;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 15px;
+        line-height: 1.65;
+      }
+      a {
+        color: inherit;
+      }
+      .wrap {
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      h1,
+      h2 {
+        font-family: var(--serif);
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+        margin: 0;
+      }
+      .label {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--dim);
+      }
+
+      /* Hero */
+      header {
+        padding: 72px 0 56px;
+        text-align: center;
+      }
+      .icon {
+        width: 96px;
+        height: 96px;
+        border-radius: 24px;
+        display: block;
+        margin: 0 auto 28px;
+        box-shadow: 0 0 0 1px var(--border);
+      }
+      h1 {
+        font-size: clamp(40px, 8vw, 64px);
+      }
+      .tagline {
+        max-width: 30em;
+        margin: 18px auto 0;
+        color: var(--dim);
+        font-size: 16px;
+      }
+      .download {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-top: 36px;
+        min-height: 54px;
+        padding: 0 30px;
+        border-radius: 12px;
+        background: var(--accent);
+        color: var(--on-accent);
+        font: 600 15px var(--mono);
+        text-decoration: none;
+        transition: opacity 0.15s;
+      }
+      .download:hover {
+        opacity: 0.85;
+      }
+      .download[aria-disabled='true'] {
+        opacity: 0.35;
+        pointer-events: none;
+      }
+      .meta {
+        margin-top: 14px;
+        min-height: 1.6em;
+        color: var(--dim);
+        font-size: 13px;
+      }
+
+      /* Sections */
+      section {
+        padding: 56px 0;
+        border-top: 1px solid var(--border);
+      }
+      h2 {
+        font-size: clamp(28px, 5vw, 36px);
+        margin-top: 10px;
+      }
+
+      .shots {
+        display: flex;
+        gap: 20px;
+        overflow-x: auto;
+        padding: 6px 24px 24px;
+        margin: 32px -24px 0;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+      }
+      .shots figure {
+        margin: 0;
+        flex: 0 0 auto;
+        scroll-snap-align: center;
+      }
+      .shots img {
+        display: block;
+        width: 230px;
+        height: auto;
+        border-radius: 26px;
+        border: 1px solid var(--border);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+      }
+      .shots figcaption {
+        margin-top: 12px;
+        text-align: center;
+        color: var(--dim);
+        font-size: 12px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 16px;
+        margin-top: 32px;
+      }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 20px;
+      }
+      .card h3 {
+        margin: 0 0 6px;
+        font: 600 15px var(--mono);
+      }
+      .card p {
+        margin: 0;
+        color: var(--dim);
+        font-size: 13.5px;
+        line-height: 1.6;
+      }
+
+      ol.steps {
+        list-style: none;
+        counter-reset: step;
+        padding: 0;
+        margin: 32px 0 0;
+        display: grid;
+        gap: 14px;
+      }
+      ol.steps li {
+        counter-increment: step;
+        display: flex;
+        gap: 16px;
+        align-items: baseline;
+      }
+      ol.steps li::before {
+        content: counter(step);
+        flex: none;
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        border: 1px solid var(--border);
+        display: grid;
+        place-items: center;
+        font: 600 13px var(--mono);
+        transform: translateY(6px);
+      }
+      .note {
+        margin-top: 24px;
+        color: var(--dim);
+        font-size: 13px;
+      }
+
+      footer {
+        padding: 36px 0 56px;
+        border-top: 1px solid var(--border);
+        color: var(--dim);
+        font-size: 13px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 28px;
+        justify-content: space-between;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <img class="icon" src="icon.png" alt="Finance Tracker icon" width="96" height="96" />
+        <h1>Finance Tracker</h1>
+        <p class="tagline">A quiet, private expense tracker for Android. Everything stays on your phone.</p>
+        <a
+          id="download"
+          class="download"
+          href="https://github.com/FaraxMalik/Finance-Tracker/releases/latest/download/finance-tracker.apk"
+          >Download for Android (.apk)</a
+        >
+        <div id="meta" class="meta">Free. No account, no ads, works offline.</div>
+      </header>
+
+      <section>
+        <div class="label">A look inside</div>
+        <h2>Simple on purpose.</h2>
+        <div class="shots">
+          <figure>
+            <img src="shots/home.webp" alt="Home: total spent, split by category and bank" loading="lazy" />
+            <figcaption>Home</figcaption>
+          </figure>
+          <figure>
+            <img src="shots/credit.webp" alt="Credit card screen" loading="lazy" />
+            <figcaption>Credit card</figcaption>
+          </figure>
+          <figure>
+            <img src="shots/all.webp" alt="All entries, grouped by day" loading="lazy" />
+            <figcaption>All entries</figcaption>
+          </figure>
+          <figure>
+            <img src="shots/home-dark.webp" alt="Home in dark mode" loading="lazy" />
+            <figcaption>Dark mode</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section>
+        <div class="label">What it does</div>
+        <h2>Where the month went.</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>Only the amount</h3>
+            <p>Type a number and save. Category, bank, place and date are all optional, and the date defaults to today.</p>
+          </div>
+          <div class="card">
+            <h3>Category and bank</h3>
+            <p>See spending by kind (Credit Card, Salary, Others) and by the bank or wallet it came from.</p>
+          </div>
+          <div class="card">
+            <h3>Credit card, clearly</h3>
+            <p>What you owe against your limit, with online purchases, swipes, withdrawals and payments tracked separately.</p>
+          </div>
+          <div class="card">
+            <h3>Quick add</h3>
+            <p>Food, Fuel, or your own shortcuts: tap one, type the amount, done.</p>
+          </div>
+          <div class="card">
+            <h3>Everything, filterable</h3>
+            <p>Every entry in one list, grouped by day. Filter by type, period, category or bank, and search.</p>
+          </div>
+          <div class="card">
+            <h3>Debts and reports</h3>
+            <p>Who owes you and whom you owe. Monthly reports as tables, exportable as CSV.</p>
+          </div>
+          <div class="card">
+            <h3>Private by design</h3>
+            <p>Your data lives on your phone only. Back it up to a file whenever you like.</p>
+          </div>
+          <div class="card">
+            <h3>Light and dark</h3>
+            <p>Follows your phone, or pick one. Three typefaces to choose from.</p>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="label">Install</div>
+        <h2>Three steps.</h2>
+        <ol class="steps">
+          <li><span>Tap <strong>Download for Android</strong> above on your phone.</span></li>
+          <li><span>Open the downloaded file. If Android asks, allow <strong>Install unknown apps</strong> for your browser.</span></li>
+          <li><span>Open <strong>Finance Tracker</strong> and add your first entry.</span></li>
+        </ol>
+        <p class="note">
+          It isn't on the Play Store, so Android shows a standard warning for apps installed from a file. To update, install
+          the newer APK over the old one: your data is kept. To move to a new phone, use Settings, Export backup.
+        </p>
+      </section>
+
+      <footer>
+        <span>Finance Tracker</span>
+        <span>
+          <a href="https://github.com/FaraxMalik/Finance-Tracker">Source on GitHub</a> ·
+          <a href="https://github.com/FaraxMalik/Finance-Tracker/releases">All releases</a>
+        </span>
+      </footer>
+    </div>
+
+    <script>
+      // Show the current version, size and date from the latest GitHub release. The download link works without this.
+      (function () {
+        var meta = document.getElementById('meta');
+        var button = document.getElementById('download');
+        fetch('https://api.github.com/repos/FaraxMalik/Finance-Tracker/releases/latest')
+          .then(function (r) {
+            if (r.status === 404) throw new Error('none');
+            return r.json();
+          })
+          .then(function (rel) {
+            var apk = (rel.assets || []).filter(function (a) {
+              return a.name === 'finance-tracker.apk';
+            })[0];
+            if (!apk) throw new Error('none');
+            var mb = (apk.size / 1048576).toFixed(0) + ' MB';
+            var date = new Date(rel.published_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+            meta.textContent = rel.tag_name + ' · ' + mb + ' · ' + date;
+          })
+          .catch(function () {
+            meta.textContent = 'The first release is on its way. Check back soon.';
+            button.setAttribute('aria-disabled', 'true');
+          });
+      })();
+    </script>
+  </body>
+</html>
