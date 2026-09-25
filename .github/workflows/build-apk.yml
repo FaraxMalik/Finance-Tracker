@@ -93,6 +93,12 @@ jobs:
           (cd dist && sha256sum finance-tracker.apk > finance-tracker.apk.sha256 && cat finance-tracker.apk.sha256)
           ls -lh dist
 
+      - name: Describe the APK (package, version, minimum Android)
+        run: |
+          aapt2=$(find "$ANDROID_HOME"/build-tools -name aapt2 | sort -V | tail -1)
+          "$aapt2" dump badging dist/finance-tracker.apk | grep -E "^(package|sdkVersion|targetSdkVersion|application-label):|^native-code:" | tee apk-info.txt
+          { echo '```'; cat apk-info.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: finance-tracker-apk
