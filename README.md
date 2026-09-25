@@ -10,6 +10,14 @@ Everything is stored on the phone: there is no server, no account and no bank co
 [latest release](https://github.com/FaraxMalik/Finance-Tracker/releases/latest)) and open it on your Android phone.
 It is not on the Play Store, so Android will ask you to allow installing from your browser or Files app. Requires Android 7 or newer. The only permissions it declares are vibration (haptics) and `INTERNET` (unused: the app makes no network requests).
 
+## Screenshots
+
+| Home | Credit card | All entries | Dark mode |
+| :---: | :---: | :---: | :---: |
+| <img src="docs/shots/home.webp" width="190" alt="Home: total spent, split by category and bank" /> | <img src="docs/shots/credit.webp" width="190" alt="Credit card screen" /> | <img src="docs/shots/all.webp" width="190" alt="All entries, grouped by day" /> | <img src="docs/shots/home-dark.webp" width="190" alt="Home in dark mode" /> |
+
+_Shown with demo data._
+
 ## Features
 
 - **Home dashboard**: total spent this cycle, split by category (Credit Card / Salary / Others) and by bank, income,
