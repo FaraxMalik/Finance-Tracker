@@ -350,7 +350,7 @@ export default function AllEntriesScreen() {
           </View>
         }
       />
-      {selecting && picked.size > 0 ? (
+      {selecting ? (
         <View style={styles.footer}>
           <Row>
             <View style={{ flex: 1 }}>

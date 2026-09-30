@@ -1,3 +1,4 @@
+import { StackBar } from '@/components/charts';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useState } from 'react';
@@ -8,7 +9,6 @@ import {
   Avatar,
   Button,
   Card,
-  Chip,
   Empty,
   ModalHeader,
   Press,
@@ -18,12 +18,12 @@ import {
   SectionTitle,
   Txt,
 } from '@/components/ui';
-import { Spacing, type Palette } from '@/constants/theme';
+import { Radius, Spacing, withAlpha, type Palette } from '@/constants/theme';
 import { useColors, useStyles } from '@/hooks/use-theme';
 import { deleteDebtEntry, deletePerson, getPerson, listDebtEntries } from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
 import { longDate } from '@/lib/dates';
-import { balanceText, DEBT_FLOW, DEBT_LABEL } from '@/lib/labels';
+import { balanceText, DEBT_FLOW } from '@/lib/labels';
 import { formatPKR } from '@/lib/money';
 
 export default function PersonScreen() {
@@ -86,8 +86,7 @@ export default function PersonScreen() {
   const side = chosen ?? (person.i_owe > person.they_owe ? 'me' : 'they');
   const sideKinds = side === 'they' ? ['lent', 'got_back'] : ['borrowed', 'paid_back'];
   const shown = entries.filter((e) => sideKinds.includes(e.kind));
-  const sideAmount = side === 'they' ? person.they_owe : person.i_owe;
-  const tone = sideAmount === 0 ? c.textDim : side === 'they' ? c.income : c.danger;
+  const tone = person.balance > 0 ? c.income : person.balance < 0 ? c.danger : c.textDim;
 
   let i = 0;
   return (
@@ -97,22 +96,44 @@ export default function PersonScreen() {
       </Reveal>
 
       <Reveal index={i++}>
-        <Card style={{ gap: 6, paddingVertical: Spacing.four - 4 }}>
-          <Txt variant="label">{side === 'they' ? 'They owe me' : 'I owe them'}</Txt>
-          <Txt variant="hero" color={tone} numberOfLines={1} adjustsFontSizeToFit>
-            {formatPKR(sideAmount)}
-          </Txt>
-          <Txt variant="small">
-            Overall: {balanceText(person.balance)} {person.balance === 0 ? '' : formatPKR(Math.abs(person.balance))}
-          </Txt>
+        <Card style={{ gap: Spacing.three }}>
+          <Row style={{ gap: Spacing.two, alignItems: 'stretch' }}>
+            <Press
+              onPress={() => setChosen('they')}
+              style={[
+                styles.side,
+                side === 'they' && { borderColor: c.income, backgroundColor: withAlpha(c.income, 0.1) },
+              ]}>
+              <Txt variant="label">They owe me</Txt>
+              <Txt variant="heading" color={c.income} numberOfLines={1} adjustsFontSizeToFit>
+                {formatPKR(person.they_owe)}
+              </Txt>
+            </Press>
+            <Press
+              onPress={() => setChosen('me')}
+              style={[
+                styles.side,
+                side === 'me' && { borderColor: c.danger, backgroundColor: withAlpha(c.danger, 0.1) },
+              ]}>
+              <Txt variant="label">I owe them</Txt>
+              <Txt variant="heading" color={c.danger} numberOfLines={1} adjustsFontSizeToFit>
+                {formatPKR(person.i_owe)}
+              </Txt>
+            </Press>
+          </Row>
+          <StackBar
+            segments={[
+              { value: person.they_owe, color: c.income },
+              { value: person.i_owe, color: c.danger },
+            ]}
+          />
+          <Row style={{ justifyContent: 'space-between' }}>
+            <Txt variant="dim">{person.balance === 0 ? 'All settled' : `Net: ${balanceText(person.balance)}`}</Txt>
+            <Txt style={{ fontWeight: '700' }} color={tone}>
+              {formatPKR(Math.abs(person.balance))}
+            </Txt>
+          </Row>
         </Card>
-      </Reveal>
-
-      <Reveal index={i++}>
-        <Row>
-          <Chip label="They owe me" selected={side === 'they'} onPress={() => setChosen('they')} />
-          <Chip label="I owe them" selected={side === 'me'} onPress={() => setChosen('me')} />
-        </Row>
       </Reveal>
 
       <Reveal index={i++}>
@@ -141,10 +162,11 @@ export default function PersonScreen() {
                     {moneyIn ? <ArrowDownIcon color={c.text} size={17} /> : <ArrowUpIcon color={c.text} size={17} />}
                   </Avatar>
                   <View style={{ flex: 1, gap: 2 }}>
-                    <Txt style={{ fontWeight: '600' }}>{e.tx_id ? 'I paid for them' : DEBT_LABEL[e.kind]}</Txt>
+                    <Txt numberOfLines={1} style={{ fontWeight: '600' }}>
+                      {e.note || 'No details'}
+                    </Txt>
                     <Txt variant="small" numberOfLines={1}>
                       {longDate(e.date)}
-                      {e.note ? ` · ${e.note}` : ''}
                     </Txt>
                   </View>
                   <Txt style={{ fontWeight: '600' }} color={moneyIn ? c.income : c.text}>
@@ -178,6 +200,14 @@ export default function PersonScreen() {
 const makeStyles = (c: Palette) =>
   StyleSheet.create({
     entry: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three - 4, paddingVertical: Spacing.three - 4 },
+    side: {
+      flex: 1,
+      gap: 4,
+      padding: Spacing.three,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
     divider: { borderBottomWidth: 1, borderBottomColor: c.border },
     trash: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
   });

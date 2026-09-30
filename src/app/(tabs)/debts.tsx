@@ -1,24 +1,40 @@
 import { useRouter } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
 import { useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, TextInput, View } from 'react-native';
 
 import { StackBar } from '@/components/charts';
 import { ChevronIcon } from '@/components/icons';
-import { Avatar, Card, Chip, Empty, Header, Press, Reveal, Row, Screen, SectionTitle, Txt } from '@/components/ui';
-import { Spacing, type Palette } from '@/constants/theme';
-import { getActiveCycle, getCycleTotals, getDebtTotals, listPeople } from '@/db/queries';
+import {
+  Avatar,
+  Button,
+  Card,
+  Chip,
+  Empty,
+  Header,
+  Press,
+  Reveal,
+  Row,
+  Screen,
+  SectionTitle,
+  Txt,
+} from '@/components/ui';
+import { Radius, Spacing, withAlpha, type Palette } from '@/constants/theme';
+import { findOrCreatePerson, getActiveCycle, getCycleTotals, getDebtTotals, listPeople } from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
-import { useColors, useStyles } from '@/hooks/use-theme';
+import { useTheme, useStyles } from '@/hooks/use-theme';
 import { initials } from '@/lib/labels';
 import { formatPKR } from '@/lib/money';
 
 export default function DebtsScreen() {
-  const c = useColors();
+  const { colors: c, fonts } = useTheme();
+  const db = useSQLiteContext();
+  const [newName, setNewName] = useState('');
   const styles = useStyles(makeStyles);
   const router = useRouter();
   const [side, setSide] = useState<'they' | 'me'>('they');
 
-  const { data } = useFocusLoad(async (db) => {
+  const { data, reload } = useFocusLoad(async (db) => {
     const cycle = await getActiveCycle(db);
     const [totals, people, cycleTotals] = await Promise.all([
       getDebtTotals(db),
@@ -31,7 +47,15 @@ export default function DebtsScreen() {
   if (!data) return <Screen tabs>{null}</Screen>;
   const { totals, people, paidForFriends } = data;
   const owed = (p: (typeof people)[number]) => (side === 'they' ? p.they_owe : p.i_owe);
-  const shown = people.filter((p) => owed(p) > 0).sort((a, b) => owed(b) - owed(a));
+  const shown = people
+    .filter((p) => owed(p) > 0 || (p.they_owe === 0 && p.i_owe === 0))
+    .sort((a, b) => owed(b) - owed(a));
+  const addPerson = async () => {
+    if (!newName.trim()) return;
+    await findOrCreatePerson(db, newName);
+    setNewName('');
+    await reload();
+  };
   const sideTotal = side === 'they' ? totals.owedToMe : totals.iOwe;
 
   let i = 0;
@@ -84,6 +108,21 @@ export default function DebtsScreen() {
       <Reveal index={i++}>
         <SectionTitle>People</SectionTitle>
         <Row style={{ marginTop: Spacing.two }}>
+          <View style={{ flex: 1 }}>
+            <TextInput
+              value={newName}
+              onChangeText={setNewName}
+              onSubmitEditing={addPerson}
+              placeholder="Add a person by name"
+              placeholderTextColor={withAlpha(c.textDim, 0.6)}
+              selectionColor={c.text}
+              returnKeyType="done"
+              style={[styles.nameInput, { fontFamily: fonts.regular }]}
+            />
+          </View>
+          <Button label="Add" variant="ghost" onPress={addPerson} disabled={!newName.trim()} />
+        </Row>
+        <Row style={{ marginTop: Spacing.two }}>
           <Chip label="They owe me" selected={side === 'they'} onPress={() => setSide('they')} />
           <Chip label="I owe them" selected={side === 'me'} onPress={() => setSide('me')} />
         </Row>
@@ -99,7 +138,7 @@ export default function DebtsScreen() {
         ) : null}
         <Card style={{ paddingVertical: Spacing.one, marginTop: Spacing.two }}>
           {people.length === 0 ? (
-            <Empty>No one yet. Tap + to record money you lent or borrowed.</Empty>
+            <Empty>No one yet. Add a person above, or tap + to record money you lent or borrowed.</Empty>
           ) : shown.length === 0 ? (
             <Empty>{side === 'they' ? 'No one owes you anything.' : 'You owe no one anything.'}</Empty>
           ) : (
@@ -115,7 +154,9 @@ export default function DebtsScreen() {
                   <Txt numberOfLines={1} style={{ fontWeight: '600' }}>
                     {p.name}
                   </Txt>
-                  <Txt variant="small">{side === 'they' ? 'owes you' : 'you owe'}</Txt>
+                  <Txt variant="small">
+                    {p.they_owe === 0 && p.i_owe === 0 ? 'settled' : side === 'they' ? 'owes you' : 'you owe'}
+                  </Txt>
                 </View>
                 <Txt style={{ fontWeight: '600' }} color={side === 'they' ? c.income : c.danger}>
                   {formatPKR(owed(p))}
@@ -132,6 +173,16 @@ export default function DebtsScreen() {
 
 const makeStyles = (c: Palette) =>
   StyleSheet.create({
+    nameInput: {
+      color: c.text,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.md,
+      backgroundColor: c.surface,
+      paddingHorizontal: Spacing.three,
+      minHeight: 50,
+      fontSize: 15,
+    },
     person: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three - 4, paddingVertical: Spacing.three - 4 },
     divider: { borderBottomWidth: 1, borderBottomColor: c.border },
   });
