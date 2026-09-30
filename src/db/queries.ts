@@ -117,7 +117,8 @@ export type CycleTotals = {
   swipeFees: number;
 };
 
-export type Person = { id: number; name: string; balance: number };
+/** `balance` is positive when they owe you. `they_owe` and `i_owe` are the two sides on their own: money lent minus what came back, and money borrowed minus what you paid back. */
+export type Person = { id: number; name: string; balance: number; they_owe: number; i_owe: number };
 export type DebtEntry = {
   id: number;
   person_id: number;
@@ -269,6 +270,15 @@ export async function deleteTag(db: SQLiteDatabase, id: number) {
   });
 }
 
+/** Moves several expenses to another category (or to none). Entries that are not expenses are left alone. */
+export async function setCategoryOnTransactions(db: SQLiteDatabase, txIds: number[], accountId: number | null) {
+  await db.withTransactionAsync(async () => {
+    for (const txId of txIds) {
+      await db.runAsync("UPDATE transactions SET account_id = ? WHERE id = ? AND type = 'expense'", accountId, txId);
+    }
+  });
+}
+
 /** Adds (`on`) or removes a tag on several entries at once. */
 export async function setTagOnTransactions(db: SQLiteDatabase, txIds: number[], tagId: number, on: boolean) {
   await db.withTransactionAsync(async () => {
@@ -392,10 +402,13 @@ export function getTransaction(db: SQLiteDatabase, id: number) {
 
 const clean = (s?: string | null) => (s && s.trim() ? s.trim() : null);
 
+/** Entries whose money can be paid on behalf of friends: an expense, or cash/money taken out on the card. */
+const SHAREABLE: TxType[] = ['expense', 'card_swipe', 'card_withdrawal'];
+
 /** Replaces the friends' shares of an expense; each becomes an "I lent" entry on the expense's date. */
 async function saveShares(db: SQLiteDatabase, txId: number, tx: TxInput) {
   await db.runAsync('DELETE FROM debt_entries WHERE tx_id = ?', txId);
-  if (tx.type !== 'expense') return;
+  if (!SHAREABLE.includes(tx.type)) return;
   const shares = (tx.shares ?? []).filter((s) => s.amount > 0);
   if (shares.reduce((sum, s) => sum + s.amount, 0) > tx.amount) {
     throw new Error('The shares add up to more than the amount paid.');
@@ -463,7 +476,7 @@ export async function updateTransaction(db: SQLiteDatabase, id: number, tx: TxIn
       clean(tx.note),
       id,
     );
-    if (tx.shares !== undefined || tx.type !== 'expense') await saveShares(db, id, tx);
+    if (tx.shares !== undefined || !SHAREABLE.includes(tx.type)) await saveShares(db, id, tx);
     if (tx.tags !== undefined) await saveTags(db, id, tx.tags);
   });
 }
@@ -640,9 +653,13 @@ export async function getCardSummary(db: SQLiteDatabase, cycleId: number): Promi
 /** lent / paid_back move the balance towards "they owe me"; borrowed / got_back move it the other way. */
 const SIGNED_AMOUNT = `CASE d.kind WHEN 'lent' THEN d.amount WHEN 'paid_back' THEN d.amount ELSE -d.amount END`;
 
+const SIDES_SQL = `COALESCE(SUM(CASE d.kind WHEN 'lent' THEN d.amount WHEN 'got_back' THEN -d.amount ELSE 0 END), 0) AS they_owe,
+       COALESCE(SUM(CASE d.kind WHEN 'borrowed' THEN d.amount WHEN 'paid_back' THEN -d.amount ELSE 0 END), 0) AS i_owe`;
+
 export function listPeople(db: SQLiteDatabase) {
   return db.getAllAsync<Person>(
-    `SELECT p.id, p.name, COALESCE(SUM(${SIGNED_AMOUNT}), 0) AS balance
+    `SELECT p.id, p.name, COALESCE(SUM(${SIGNED_AMOUNT}), 0) AS balance,
+       ${SIDES_SQL}
      FROM people p LEFT JOIN debt_entries d ON d.person_id = p.id
      GROUP BY p.id ORDER BY ABS(COALESCE(SUM(${SIGNED_AMOUNT}), 0)) DESC, p.name COLLATE NOCASE`,
   );
@@ -657,7 +674,8 @@ export async function getDebtTotals(db: SQLiteDatabase) {
 
 export function getPerson(db: SQLiteDatabase, id: number) {
   return db.getFirstAsync<Person>(
-    `SELECT p.id, p.name, COALESCE(SUM(${SIGNED_AMOUNT}), 0) AS balance
+    `SELECT p.id, p.name, COALESCE(SUM(${SIGNED_AMOUNT}), 0) AS balance,
+       ${SIDES_SQL}
      FROM people p LEFT JOIN debt_entries d ON d.person_id = p.id WHERE p.id = ? GROUP BY p.id`,
     id,
   );

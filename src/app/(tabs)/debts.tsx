@@ -1,20 +1,22 @@
 import { useRouter } from 'expo-router';
+import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
 import { StackBar } from '@/components/charts';
 import { ChevronIcon } from '@/components/icons';
-import { Avatar, Card, Empty, Header, Press, Reveal, Row, Screen, SectionTitle, Txt } from '@/components/ui';
+import { Avatar, Card, Chip, Empty, Header, Press, Reveal, Row, Screen, SectionTitle, Txt } from '@/components/ui';
 import { Spacing, type Palette } from '@/constants/theme';
 import { getActiveCycle, getCycleTotals, getDebtTotals, listPeople } from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
 import { useColors, useStyles } from '@/hooks/use-theme';
-import { balanceText, initials } from '@/lib/labels';
+import { initials } from '@/lib/labels';
 import { formatPKR } from '@/lib/money';
 
 export default function DebtsScreen() {
   const c = useColors();
   const styles = useStyles(makeStyles);
   const router = useRouter();
+  const [side, setSide] = useState<'they' | 'me'>('they');
 
   const { data } = useFocusLoad(async (db) => {
     const cycle = await getActiveCycle(db);
@@ -28,6 +30,9 @@ export default function DebtsScreen() {
 
   if (!data) return <Screen tabs>{null}</Screen>;
   const { totals, people, paidForFriends } = data;
+  const owed = (p: (typeof people)[number]) => (side === 'they' ? p.they_owe : p.i_owe);
+  const shown = people.filter((p) => owed(p) > 0).sort((a, b) => owed(b) - owed(a));
+  const sideTotal = side === 'they' ? totals.owedToMe : totals.iOwe;
 
   let i = 0;
   return (
@@ -78,15 +83,31 @@ export default function DebtsScreen() {
 
       <Reveal index={i++}>
         <SectionTitle>People</SectionTitle>
+        <Row style={{ marginTop: Spacing.two }}>
+          <Chip label="They owe me" selected={side === 'they'} onPress={() => setSide('they')} />
+          <Chip label="I owe them" selected={side === 'me'} onPress={() => setSide('me')} />
+        </Row>
+        {shown.length > 0 ? (
+          <Row style={{ justifyContent: 'space-between', marginTop: Spacing.two }}>
+            <Txt variant="small">
+              {shown.length} {shown.length === 1 ? 'person' : 'people'}
+            </Txt>
+            <Txt style={{ fontWeight: '700' }} color={side === 'they' ? c.income : c.danger}>
+              {formatPKR(sideTotal)}
+            </Txt>
+          </Row>
+        ) : null}
         <Card style={{ paddingVertical: Spacing.one, marginTop: Spacing.two }}>
           {people.length === 0 ? (
             <Empty>No one yet. Tap + to record money you lent or borrowed.</Empty>
+          ) : shown.length === 0 ? (
+            <Empty>{side === 'they' ? 'No one owes you anything.' : 'You owe no one anything.'}</Empty>
           ) : (
-            people.map((p, n) => (
+            shown.map((p, n) => (
               <Press
                 key={p.id}
                 onPress={() => router.push(`/person/${p.id}`)}
-                style={[styles.person, n < people.length - 1 && styles.divider]}>
+                style={[styles.person, n < shown.length - 1 && styles.divider]}>
                 <Avatar>
                   <Txt style={{ fontWeight: '600', fontSize: 13 }}>{initials(p.name)}</Txt>
                 </Avatar>
@@ -94,12 +115,10 @@ export default function DebtsScreen() {
                   <Txt numberOfLines={1} style={{ fontWeight: '600' }}>
                     {p.name}
                   </Txt>
-                  <Txt variant="small">{balanceText(p.balance)}</Txt>
+                  <Txt variant="small">{side === 'they' ? 'owes you' : 'you owe'}</Txt>
                 </View>
-                <Txt
-                  style={{ fontWeight: '600' }}
-                  color={p.balance > 0 ? c.income : p.balance < 0 ? c.danger : c.textDim}>
-                  {formatPKR(Math.abs(p.balance))}
+                <Txt style={{ fontWeight: '600' }} color={side === 'they' ? c.income : c.danger}>
+                  {formatPKR(owed(p))}
                 </Txt>
                 <ChevronIcon color={c.textDim} size={16} />
               </Press>

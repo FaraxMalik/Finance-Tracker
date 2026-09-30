@@ -81,11 +81,11 @@ export default function QuickEditScreen() {
       style={{ gap: Spacing.four }}
       footer={
         <View style={{ gap: Spacing.two }}>
-          <Button label={editingId ? 'Save changes' : 'Add quick add'} onPress={save} />
+          <Button label={editingId ? 'Save changes' : 'Add place'} onPress={save} />
           {editingId ? <Button label="Remove" variant="danger" onPress={remove} /> : null}
         </View>
       }>
-      <ModalHeader title={editingId ? 'Edit quick add' : 'New quick add'} onSave={save} />
+      <ModalHeader title={editingId ? 'Edit place' : 'New place'} onSave={save} />
 
       <Field
         label="Name"
@@ -141,8 +141,7 @@ export default function QuickEditScreen() {
       )}
 
       <Txt variant="small">
-        When you use this quick add you only type the amount (and a date if it isn’t today). The category and bank above
-        are filled in for you.
+        When you pick this place while adding an expense, the category and bank above are filled in for you.
       </Txt>
     </Screen>
   );

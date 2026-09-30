@@ -1,9 +1,23 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
+import { useState } from 'react';
 import { Alert, StyleSheet, View } from 'react-native';
 
 import { ArrowDownIcon, ArrowUpIcon, ChevronIcon, TrashIcon } from '@/components/icons';
-import { Avatar, Button, Card, Empty, ModalHeader, Press, Reveal, Screen, SectionTitle, Txt } from '@/components/ui';
+import {
+  Avatar,
+  Button,
+  Card,
+  Chip,
+  Empty,
+  ModalHeader,
+  Press,
+  Reveal,
+  Row,
+  Screen,
+  SectionTitle,
+  Txt,
+} from '@/components/ui';
 import { Spacing, type Palette } from '@/constants/theme';
 import { useColors, useStyles } from '@/hooks/use-theme';
 import { deleteDebtEntry, deletePerson, getPerson, listDebtEntries } from '@/db/queries';
@@ -19,6 +33,7 @@ export default function PersonScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const personId = Number(id);
+  const [chosen, setChosen] = useState<'they' | 'me' | null>(null);
 
   const { data, reload } = useFocusLoad(async (d) => {
     const [person, entries] = await Promise.all([getPerson(d, personId), listDebtEntries(d, personId)]);
@@ -67,7 +82,12 @@ export default function PersonScreen() {
       ],
     );
 
-  const tone = person.balance > 0 ? c.income : person.balance < 0 ? c.danger : c.textDim;
+  // Show the bigger side first unless a side was picked: what they owe me, or what I owe them.
+  const side = chosen ?? (person.i_owe > person.they_owe ? 'me' : 'they');
+  const sideKinds = side === 'they' ? ['lent', 'got_back'] : ['borrowed', 'paid_back'];
+  const shown = entries.filter((e) => sideKinds.includes(e.kind));
+  const sideAmount = side === 'they' ? person.they_owe : person.i_owe;
+  const tone = sideAmount === 0 ? c.textDim : side === 'they' ? c.income : c.danger;
 
   let i = 0;
   return (
@@ -78,11 +98,21 @@ export default function PersonScreen() {
 
       <Reveal index={i++}>
         <Card style={{ gap: 6, paddingVertical: Spacing.four - 4 }}>
-          <Txt variant="label">{balanceText(person.balance)}</Txt>
+          <Txt variant="label">{side === 'they' ? 'They owe me' : 'I owe them'}</Txt>
           <Txt variant="hero" color={tone} numberOfLines={1} adjustsFontSizeToFit>
-            {formatPKR(Math.abs(person.balance))}
+            {formatPKR(sideAmount)}
+          </Txt>
+          <Txt variant="small">
+            Overall: {balanceText(person.balance)} {person.balance === 0 ? '' : formatPKR(Math.abs(person.balance))}
           </Txt>
         </Card>
+      </Reveal>
+
+      <Reveal index={i++}>
+        <Row>
+          <Chip label="They owe me" selected={side === 'they'} onPress={() => setChosen('they')} />
+          <Chip label="I owe them" selected={side === 'me'} onPress={() => setChosen('me')} />
+        </Row>
       </Reveal>
 
       <Reveal index={i++}>
@@ -95,10 +125,10 @@ export default function PersonScreen() {
       <Reveal index={i++}>
         <SectionTitle>History</SectionTitle>
         <Card style={{ paddingVertical: Spacing.one, marginTop: Spacing.two }}>
-          {entries.length === 0 ? (
-            <Empty>No entries yet.</Empty>
+          {shown.length === 0 ? (
+            <Empty>{side === 'they' ? 'Nothing lent to them yet.' : 'Nothing borrowed from them yet.'}</Empty>
           ) : (
-            entries.map((e, n) => {
+            shown.map((e, n) => {
               const moneyIn = DEBT_FLOW[e.kind] === 'in';
               return (
                 <Press
@@ -106,7 +136,7 @@ export default function PersonScreen() {
                   onPress={
                     e.tx_id ? () => router.push({ pathname: '/add', params: { id: String(e.tx_id) } }) : undefined
                   }
-                  style={[styles.entry, n < entries.length - 1 && styles.divider]}>
+                  style={[styles.entry, n < shown.length - 1 && styles.divider]}>
                   <Avatar size={36}>
                     {moneyIn ? <ArrowDownIcon color={c.text} size={17} /> : <ArrowUpIcon color={c.text} size={17} />}
                   </Avatar>

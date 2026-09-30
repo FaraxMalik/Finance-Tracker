@@ -285,9 +285,12 @@ export default function SettingsScreen() {
         </Row>
       </Card>
 
-      <SectionTitle>Quick add</SectionTitle>
+      <SectionTitle>Places</SectionTitle>
       <Card style={{ gap: Spacing.three }}>
-        <Txt variant="small">Shortcuts on Home: pick one, type the amount, done. Tap one to change what it uses.</Txt>
+        <Txt variant="small">
+          Places you spend at. They show as chips under “Where did you spend” when adding an expense, and bring their
+          usual category and bank along.
+        </Txt>
         {(quick ?? []).map((q) => (
           <Row key={q.id} style={{ justifyContent: 'space-between' }}>
             <View style={{ flex: 1, gap: 2 }}>
@@ -306,7 +309,7 @@ export default function SettingsScreen() {
             </Txt>
           </Row>
         ))}
-        <Button label="Add a quick add" variant="ghost" onPress={() => router.push('/quick-edit')} />
+        <Button label="Add a place" variant="ghost" onPress={() => router.push('/quick-edit')} />
       </Card>
 
       <SectionTitle>Tags</SectionTitle>

@@ -40,7 +40,6 @@ function txSubtitle(tx: Tx, withDate = true): string {
   if (tx.type === 'expense') {
     parts.push(tx.account_name ?? 'Uncategorised');
     if (tx.bank_name) parts.push(tx.bank_name);
-    if (tx.shared_with) parts.push(`with ${tx.shared_with}`);
     if (tx.tag_names)
       parts.push(
         tx.tag_names
@@ -57,6 +56,7 @@ function txSubtitle(tx: Tx, withDate = true): string {
   } else if (tx.bank_name) {
     parts.push(`to ${tx.bank_name}`);
   }
+  if (tx.shared_with && tx.type !== 'income' && tx.type !== 'card_payment') parts.push(`with ${tx.shared_with}`);
   if (withDate) parts.push(relativeDate(tx.date));
   return parts.join(' · ');
 }

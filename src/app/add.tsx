@@ -7,6 +7,7 @@ import { DateChips } from '@/components/date-chips';
 import { Button, Card, Chip, ChipRow, Divider, Field, ModalHeader, Press, Row, Screen, Txt } from '@/components/ui';
 import { Radius, Spacing, withAlpha, type Palette } from '@/constants/theme';
 import {
+  addQuick,
   addTransaction,
   deleteTransaction,
   findOrCreatePerson,
@@ -138,7 +139,6 @@ export default function AddScreen() {
       setPeople(await listPeople(db));
       setAllTags(await listTags(db));
       setCycleId(cycle?.id ?? null);
-      const cash = bks.find((b) => b.name.toLowerCase() === 'cash' && !b.archived);
 
       if (editingId) {
         const tx = await getTransaction(db, editingId);
@@ -162,9 +162,6 @@ export default function AddScreen() {
           setSplitMode('custom');
           setCustomBy(Object.fromEntries(shares.map((x) => [`p${x.person_id}`, fromPaisa(x.amount)])));
         }
-      } else if (params.type === 'card_withdrawal') {
-        // A withdrawal hands you cash.
-        if (cash) setBankId(cash.id);
       } else if (params.scope !== 'card' && (!params.type || params.type === 'expense')) {
         // New expenses start from the last category and bank you used.
         const lastCat = await getNumberSetting(db, 'last_account_id', 0);
@@ -178,10 +175,6 @@ export default function AddScreen() {
   const selectType = (next: TxType) => {
     if (locked) return;
     setType(next);
-    if (next === 'card_withdrawal' && bankId === null) {
-      const cash = banks.find((b) => b.name.toLowerCase() === 'cash' && !b.archived);
-      if (cash) setBankId(cash.id);
-    }
   };
 
   // "Online" (an expense from the Credit screen) is always the credit card category.
@@ -193,10 +186,11 @@ export default function AddScreen() {
     type === 'expense' && !cardOnline ? categories.filter((x) => !x.archived || x.id === categoryId) : [];
   const category = cardOnline ? creditCategory : (categoryChoices.find((x) => x.id === categoryId) ?? null);
 
-  // A credit-card expense isn't paid from a bank (the bill is paid later, as a card payment).
-  const onCard = type === 'expense' && category?.kind === 'credit';
+  // Anything on the credit card has no bank: the card bill is paid later, as a card payment.
+  const onCard = cardScope || (type === 'expense' && category?.kind === 'credit');
   const bankChoices = banks.filter((b) => !b.archived || b.id === bankId);
   const bank = onCard ? null : (bankChoices.find((b) => b.id === bankId) ?? null);
+  const canShare = type === 'expense' || type === 'card_swipe' || type === 'card_withdrawal';
   const hasFee = type === 'card_swipe' || type === 'card_withdrawal';
 
   const totalPaisa = toPaisa(amount);
@@ -228,6 +222,25 @@ export default function AddScreen() {
     setNewName('');
   };
 
+  const pickPlace = (q: QuickExpense) => {
+    const same = place.trim().toLowerCase() === q.name.toLowerCase();
+    setPlace(same ? '' : q.name);
+    if (same) return;
+    // A saved place brings its usual category and bank along (a card purchase keeps the credit category).
+    if (!cardOnline && q.account_id && categories.some((x) => x.id === q.account_id && !x.archived))
+      setCategoryId(q.account_id);
+    if (q.bank_id && banks.some((b) => b.id === q.bank_id && !b.archived)) setBankId(q.bank_id);
+  };
+
+  const newPlaceName =
+    place.trim() && !quick.some((q) => q.name.toLowerCase() === place.trim().toLowerCase()) ? place.trim() : null;
+
+  const saveAsPlace = async () => {
+    if (!newPlaceName) return;
+    await addQuick(db, newPlaceName, category?.id ?? null, bank?.id ?? null);
+    setQuick(await listQuick(db));
+  };
+
   const toggleTag = (id: number) => setTagIds((t) => (t.includes(id) ? t.filter((x) => x !== id) : [...t, id]));
 
   const addNewTag = async () => {
@@ -255,12 +268,12 @@ export default function AddScreen() {
       return setError('Mark one category as Credit in Settings first, so card purchases have a home.');
     const feePaisa = hasFee ? toPaisa(fee) : 0;
     if (feePaisa > amountPaisa) return setError('The fee cannot be bigger than the amount.');
-    if (type === 'expense' && overShared) return setError('The friends’ shares add up to more than you paid.');
+    if (canShare && overShared) return setError('The friends’ shares add up to more than you paid.');
     if (!cycleId) return;
 
     setSaving(true);
     const shares: Share[] = [];
-    if (type === 'expense') {
+    if (canShare) {
       for (const [i, x] of who.entries()) {
         const person_id = x.personId ?? (await findOrCreatePerson(db, x.name));
         shares.push({ person_id, amount: split.others[i] });
@@ -344,22 +357,6 @@ export default function AddScreen() {
         })}
       </View>
 
-      {!editingId && !cardScope && type === 'expense' && quick.length > 0 ? (
-        <View style={{ gap: Spacing.two + 2 }}>
-          <Txt variant="label">Quick add</Txt>
-          <ChipRow>
-            {quick.map((q) => (
-              <Chip
-                key={q.id}
-                label={q.name}
-                selected={false}
-                onPress={() => router.replace({ pathname: '/quick', params: { id: String(q.id) } })}
-              />
-            ))}
-          </ChipRow>
-        </View>
-      ) : null}
-
       <View style={{ gap: 6 }}>
         <Txt variant="label">Amount</Txt>
         <View style={[styles.amountRow, error ? { borderBottomColor: c.danger } : null]}>
@@ -413,14 +410,37 @@ export default function AddScreen() {
       ) : null}
 
       {type === 'expense' ? (
-        <Field
-          label="Where did you spend"
-          optional
-          value={place}
-          onChangeText={setPlace}
-          editable={!locked}
-          placeholder="e.g. Grocery store"
-        />
+        <View style={{ gap: Spacing.two + 2 }}>
+          <Txt variant="label">
+            Where did you spend<Txt variant="small">{'   optional'}</Txt>
+          </Txt>
+          {quick.length > 0 ? (
+            <ChipRow>
+              {quick.map((q) => (
+                <Chip
+                  key={q.id}
+                  label={q.name}
+                  selected={place.trim().toLowerCase() === q.name.toLowerCase()}
+                  onPress={() => !locked && pickPlace(q)}
+                />
+              ))}
+            </ChipRow>
+          ) : null}
+          <Row>
+            <View style={{ flex: 1 }}>
+              <TextInput
+                value={place}
+                onChangeText={setPlace}
+                editable={!locked}
+                placeholder="Type a place, e.g. Grocery store"
+                placeholderTextColor={withAlpha(c.textDim, 0.6)}
+                selectionColor={c.text}
+                style={[styles.friendInput, { fontFamily: fonts.regular }]}
+              />
+            </View>
+            {newPlaceName && !locked ? <Button label="Save as place" variant="ghost" onPress={saveAsPlace} /> : null}
+          </Row>
+        </View>
       ) : null}
 
       {type === 'income' ? (
@@ -469,7 +489,7 @@ export default function AddScreen() {
         </View>
       ) : null}
 
-      {onCard && !cardOnline ? (
+      {onCard && !cardScope ? (
         <Txt variant="small">
           Charged to your credit card, so it also appears on the Credit screen as Online and adds to what you owe. No
           bank needed.
@@ -493,7 +513,7 @@ export default function AddScreen() {
         </View>
       ) : null}
 
-      {type === 'expense' ? (
+      {canShare ? (
         <View style={{ gap: Spacing.two + 2 }}>
           <Txt variant="label">
             Paid for others<Txt variant="small">{'   optional'}</Txt>

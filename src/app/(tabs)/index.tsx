@@ -9,8 +9,6 @@ import { TxRow } from '@/components/tx-row';
 import {
   Button,
   Card,
-  Chip,
-  ChipRow,
   Divider,
   Empty,
   Header,
@@ -30,7 +28,6 @@ import {
   getCycleTotals,
   getDailySpend,
   getTagTotals,
-  listQuick,
   listTransactions,
 } from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
@@ -45,19 +42,18 @@ export default function Dashboard() {
   const { data } = useFocusLoad(async (db) => {
     const cycle = (await getActiveCycle(db))!;
     const startDay = await getCycleStartDay(db);
-    const [totals, daily, recent, quick, tags] = await Promise.all([
+    const [totals, daily, recent, tags] = await Promise.all([
       getCycleTotals(db, cycle.id),
       getDailySpend(db, cycle.id),
       listTransactions(db, cycle.id, 5),
-      listQuick(db),
       getTagTotals(db, cycle.id),
     ]);
-    return { cycle, startDay, totals, daily, recent, quick, tags };
+    return { cycle, startDay, totals, daily, recent, tags };
   });
 
   if (!data) return <Screen tabs>{null}</Screen>;
 
-  const { cycle, startDay, totals, daily, recent, quick, tags } = data;
+  const { cycle, startDay, totals, daily, recent, tags } = data;
   const end = nominalEnd(cycle.start_date, startDay);
   const progress = cycleProgress(cycle.start_date, startDay);
   const today = todayISO();
@@ -134,23 +130,6 @@ export default function Dashboard() {
                 : `Day ${progress.dayNumber} of ${progress.totalDays}  ·  ${progress.daysLeft} day${progress.daysLeft === 1 ? '' : 's'} left`}
             </Txt>
           </View>
-        </View>
-      </Reveal>
-
-      <Reveal index={i++}>
-        <SectionTitle>Quick add</SectionTitle>
-        <View style={{ marginTop: Spacing.two }}>
-          <ChipRow>
-            {quick.map((q) => (
-              <Chip
-                key={q.id}
-                label={q.name}
-                selected={false}
-                onPress={() => router.push({ pathname: '/quick', params: { id: String(q.id) } })}
-              />
-            ))}
-            <Chip label="+ New" selected={false} onPress={() => router.push('/quick-edit')} />
-          </ChipRow>
         </View>
       </Reveal>
 

@@ -17,6 +17,7 @@ import {
   applyFilters,
   groupByDate,
   myShare,
+  NONE,
   NO_FILTERS,
   summarize,
   type Filters,
@@ -739,24 +740,31 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
   await test('all entries: category filter (only expenses have one), incl. "none"', async () => {
     const { f, cats } = await ledger();
     assert.deepEqual(
-      f({ category: cats['Credit Card'] }).map((t) => t.place),
+      f({ categories: [cats['Credit Card']] }).map((t) => t.place),
       ['Shoes'],
     );
-    assert.equal(f({ category: cats['Others'] }).length, 2);
-    const none = f({ category: 'none' });
+    assert.equal(f({ categories: [cats['Others']] }).length, 2);
+    assert.equal(
+      f({ categories: [cats['Others'], cats['Credit Card']] }).length,
+      3,
+      'several categories at once are added together',
+    );
+    assert.equal(f({ categories: [cats['Credit Card'], NONE] }).length, 2, 'category and "none" combine');
+    const none = f({ categories: [NONE] });
     assert.equal(none.length, 1);
     assert.equal(none[0].amount, R(300));
     assert.ok(
-      f({ category: cats['Others'] }).every((t) => t.type === 'expense'),
+      f({ categories: [cats['Others']] }).every((t) => t.type === 'expense'),
       'income/card entries never match a category',
     );
   });
 
   await test('all entries: bank filter (any entry type), incl. "no bank"', async () => {
     const { f, bk } = await ledger();
-    assert.equal(f({ bank: bk['Cash'] }).length, 3); // 2 expenses + the withdrawal
-    assert.equal(f({ bank: bk['Meezan Bank'] }).length, 2); // salary income + card payment
-    const none = f({ bank: 'none' });
+    assert.equal(f({ banks: [bk['Cash']] }).length, 3); // 2 expenses + the withdrawal
+    assert.equal(f({ banks: [bk['Meezan Bank']] }).length, 2); // salary income + card payment
+    assert.equal(f({ banks: [bk['Meezan Bank'], bk['Cash']] }).length, 5, 'several banks at once');
+    const none = f({ banks: [NONE] });
     assert.deepEqual(
       none.map((t) => t.amount).sort((a, b) => a - b),
       [R(300), R(12500)],
@@ -802,7 +810,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
 
   await test('all entries: filters combine, and sorting works', async () => {
     const { f, cats } = await ledger();
-    assert.equal(f({ type: 'expense', period: 'cycle', category: cats['Others'], query: 'grocer' }).length, 1);
+    assert.equal(f({ type: 'expense', period: 'cycle', categories: [cats['Others']], query: 'grocer' }).length, 1);
     assert.deepEqual(
       f({ sort: 'largest' })
         .slice(0, 2)
@@ -812,7 +820,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     const oldest = f({ sort: 'oldest' }).map((t) => t.date);
     assert.deepEqual(oldest, [...oldest].sort());
     assert.equal(
-      activeFilterCount({ ...NO_FILTERS, type: 'income', bank: 5, query: 'x', sort: 'largest' }),
+      activeFilterCount({ ...NO_FILTERS, type: 'income', banks: [5], query: 'x', sort: 'largest' }),
       3,
       'sort is not a filter',
     );
@@ -933,6 +941,64 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.equal((await q.getCycleTotals(d, c.id)).creditSpent, R(6000));
   });
 
+  await test('paying for friends on a swipe or withdrawal: shares become debts, the card still owes it all', async () => {
+    const { d, c, ali } = await sharedSetup();
+    const swipe = await q.addTransaction(d, c.id, {
+      type: 'card_swipe',
+      amount: R(10000),
+      fee: R(200),
+      date: '2026-09-11',
+      shares: [{ person_id: ali, amount: R(3000) }],
+    });
+    await q.addTransaction(d, c.id, {
+      type: 'card_withdrawal',
+      amount: R(5000),
+      date: '2026-09-12',
+      shares: [{ person_id: ali, amount: R(1000) }],
+    });
+    assert.equal((await q.getCardSummary(d, c.id)).owed, R(15000));
+    assert.equal((await q.getTransaction(d, swipe))!.shared, R(3000));
+    const person = (await q.listPeople(d)).find((p) => p.id === ali)!;
+    assert.deepEqual([person.balance, person.they_owe, person.i_owe], [R(4000), R(4000), 0]);
+    assert.equal((await q.getCycleTotals(d, c.id)).totalSpent, R(200), 'only the fee is spending');
+
+    await q.updateTransaction(d, swipe, { type: 'card_swipe', amount: R(10000), fee: R(200), date: '2026-09-11' });
+    assert.equal((await q.getTransaction(d, swipe))!.shared, R(3000), 'shares kept when not passed');
+    await q.updateTransaction(d, swipe, { type: 'card_swipe', amount: R(10000), date: '2026-09-11', shares: [] });
+    assert.equal((await q.getTransaction(d, swipe))!.shared, 0);
+  });
+
+  await test('people: they_owe and i_owe are separate sides of the balance', async () => {
+    const { d, ali } = await sharedSetup();
+    const add = (kind: 'lent' | 'got_back' | 'borrowed' | 'paid_back', amount: number) =>
+      q.addDebtEntry(d, ali, kind, R(amount), '2026-09-10');
+    await add('lent', 1000);
+    await add('got_back', 400);
+    await add('borrowed', 700);
+    await add('paid_back', 200);
+    const p = (await q.getPerson(d, ali))!;
+    assert.deepEqual([p.they_owe, p.i_owe, p.balance], [R(600), R(500), R(100)]);
+    assert.equal((await q.listPeople(d)).find((x) => x.id === ali)!.i_owe, R(500));
+  });
+
+  await test('bulk category: only expenses move, and none clears it', async () => {
+    const { d, c, cats } = await sharedSetup();
+    const e1 = await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(100),
+      date: '2026-09-10',
+      account_id: cats['Others'],
+    });
+    const e2 = await q.addTransaction(d, c.id, { type: 'expense', amount: R(200), date: '2026-09-10' });
+    const inc = await q.addTransaction(d, c.id, { type: 'income', amount: R(900), date: '2026-09-10' });
+    await q.setCategoryOnTransactions(d, [e1, e2, inc], cats['Credit Card']);
+    assert.equal((await q.getTransaction(d, e1))!.account_id, cats['Credit Card']);
+    assert.equal((await q.getTransaction(d, e2))!.account_id, cats['Credit Card']);
+    assert.equal((await q.getTransaction(d, inc))!.account_id, null, 'income has no category');
+    await q.setCategoryOnTransactions(d, [e1], null);
+    assert.equal((await q.getTransaction(d, e1))!.account_id, null);
+  });
+
   await test('paying for friends: editing replaces the shares, leaving them out keeps them, other types drop them', async () => {
     const { d, c, cats, ali, sara } = await sharedSetup();
     const base = { type: 'expense' as const, amount: R(600), date: '2026-09-12', account_id: cats['Others'] };
@@ -983,7 +1049,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.equal(t.sharedOut, R(1200));
   });
 
-  await test('tags: create, tag many entries at once, totals per cycle, AND filter, delete, backup', async () => {
+  await test('tags: create, tag many entries at once, totals per cycle, any-of filter, delete, backup', async () => {
     const { d, c, cats, ali } = await sharedSetup();
     const base = { type: 'expense' as const, date: '2026-09-10', account_id: cats['Others'] };
     const trip = await q.findOrCreateTag(d, 'Trip');
@@ -1013,8 +1079,10 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     const all = await q.listAllTransactions(d);
     const ctx = { today: '2026-09-30', currentCycleId: c.id, lastCycleId: null };
     const both = applyFilters(all, { ...NO_FILTERS, tags: [trip, food] }, ctx);
+    assert.equal(both.length, 3, 'several tags match entries carrying any of them, each entry once');
+    assert.ok(both.some((t) => t.id === b));
     assert.deepEqual(
-      both.map((t) => t.id),
+      applyFilters(all, { ...NO_FILTERS, tags: [food] }, ctx).map((t) => t.id),
       [b],
     );
     assert.equal(activeFilterCount({ ...NO_FILTERS, tags: [trip] }), 1);

@@ -10,22 +10,25 @@ export type Sort = 'newest' | 'oldest' | 'largest';
 
 export type Filters = {
   type: TypeFilter;
-  /** 'all', 'none' (expenses with no category) or a category id. Only expenses have a category. */
-  category: 'all' | 'none' | number;
-  /** 'all', 'none' (no bank named) or a bank id. */
-  bank: 'all' | 'none' | number;
+  /** Category ids to show; `NONE` stands for "no category". Empty = any. Only expenses have a category. */
+  categories: number[];
+  /** Bank ids to show; `NONE` stands for "no bank named". Empty = any. */
+  banks: number[];
   period: Period;
-  /** Tag ids an entry must all carry (empty = don't filter by tag). */
+  /** Tag ids; an entry needs at least one of them (empty = don't filter by tag). */
   tags: number[];
   query: string;
   sort: Sort;
 };
 
+/** Stands for "no category" / "no bank" inside `categories` and `banks`. */
+export const NONE = 0;
+
 /** Nothing filtered: every entry, newest first. */
 export const NO_FILTERS: Filters = {
   type: 'all',
-  category: 'all',
-  bank: 'all',
+  categories: [],
+  banks: [],
   period: 'all',
   tags: [],
   query: '',
@@ -36,8 +39,8 @@ export const NO_FILTERS: Filters = {
 export function activeFilterCount(f: Filters): number {
   return [
     f.type !== 'all',
-    f.category !== 'all',
-    f.bank !== 'all',
+    f.categories.length > 0,
+    f.banks.length > 0,
     f.period !== 'all',
     f.tags.length > 0,
     f.query.trim() !== '',
@@ -76,11 +79,11 @@ export function applyFilters(txs: Tx[], f: Filters, ctx: FilterContext): Tx[] {
     if (f.type === 'income' && t.type !== 'income') return false;
     if (f.type === 'card' && !isCardEntry(t)) return false;
 
-    if (f.category !== 'all') {
+    if (f.categories.length) {
       if (t.type !== 'expense') return false;
-      if (f.category === 'none' ? t.account_id !== null : t.account_id !== f.category) return false;
+      if (!f.categories.includes(t.account_id ?? NONE)) return false;
     }
-    if (f.bank !== 'all' && (f.bank === 'none' ? t.bank_id !== null : t.bank_id !== f.bank)) return false;
+    if (f.banks.length && !f.banks.includes(t.bank_id ?? NONE)) return false;
 
     if (f.period === 'cycle' && t.cycle_id !== ctx.currentCycleId) return false;
     if (f.period === 'last' && t.cycle_id !== ctx.lastCycleId) return false;
@@ -89,7 +92,7 @@ export function applyFilters(txs: Tx[], f: Filters, ctx: FilterContext): Tx[] {
 
     if (f.tags.length) {
       const have = (t.tag_ids ?? '').split(',').filter(Boolean).map(Number);
-      if (!f.tags.every((id) => have.includes(id))) return false;
+      if (!f.tags.some((id) => have.includes(id))) return false;
     }
 
     return matchesQuery(t, f.query);

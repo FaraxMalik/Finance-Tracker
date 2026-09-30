@@ -26,14 +26,17 @@ _Shown with demo data._
   spending and income totals; the card balance and debts carry over.
 - **Category and bank are separate**: an expense has a _category_ (what kind of spending) and a _bank_ (which
   account it was paid from): NayaPay, Meezan Bank, Cash, Faysal Bank, SadaPay. Both lists are editable.
-- **Credit card screen**: what you owe, the limit and what is available, with three ways the card is used, each with
+- **Credit card screen** (card entries have no bank): what you owe, the limit and what is available, with three ways the card is used, each with
   its own total: **Online** (a purchase), **Swipe** (card to bank) and **Withdrawal** (card to cash), plus
   **Payments**.
-- **Quick add**: saved shortcuts such as Food and Fuel. Tap one, type the amount, save. The date is today unless
-  you pick another. Add your own with **+ New**.
-- **All entries**: every entry across all cycles, grouped by day. Filter by type, period, category and bank, search,
-  and sort. Totals for what is on screen.
-- **Paid for friends**: on any expense, pick the friends you paid for and split it equally, all on them, or with
+- **Places**: under "Where did you spend" the Add screen shows your saved places (Food and Fuel to start). Tap one
+  and it fills in the place with its usual category and bank. Type a new place and tap **Save as place** to keep it;
+  manage them in Settings.
+- **All entries**: every entry across all cycles, grouped by day. Pick several categories, banks and tags at once
+  (an entry matches if it has any of the ones you picked), plus type, period, search and sort. A summary shows the
+  count, total paid and your share for whatever is on screen. Select many entries to move them to a category or
+  tag them together and see their sum.
+- **Paid for friends**: on any expense (and on a card swipe or withdrawal), pick the friends you paid for and split it equally, all on them, or with
   custom amounts. Their shares go straight into their balance under Debts; only your own share counts as your
   spending.
 - **Two main totals**: **Total paid** (everything you entered) and **My spending** (leaves out what you paid for
@@ -41,7 +44,8 @@ _Shown with demo data._
 - **Tags**: your own groups, such as a trip. Tag an expense while adding it, or hold an entry in All entries, select
   several and tag them together; the selection shows its own total. Each tag has its own total on Home, and All
   entries can filter by several tags at once.
-- **Debts**: who owes you and whom you owe, with a history per person.
+- **Debts**: switch between **They owe me** and **I owe them** to list people and amounts, with a history per person
+  for each side.
 - **Monthly reports** as tables, exportable as CSV, and **backup / restore** to a JSON file.
 - **Light, dark or system theme** and three typefaces (Mono, Serif, Classic), all in Settings.
 
@@ -100,7 +104,7 @@ Go is the real thing (the native date picker, haptics and fonts behave different
 ```
 src/
   app/            screens (Expo Router). (tabs) = Home, Credit, Debts, History;
-                  add, quick, quick-edit, debt-entry, settings, all, cycle/[id], person/[id]
+                  add, quick-edit, debt-entry, settings, all, cycle/[id], person/[id]
   components/     shared UI (ui.tsx), charts, rows, tab bar, date chips, category and bank lists
   constants/      colour palettes, fonts, spacing
   db/             schema.ts (versioned migrations) and queries.ts (every SQL query)

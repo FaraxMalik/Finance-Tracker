@@ -82,7 +82,6 @@ function ThemedApp() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="add" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
         <Stack.Screen name="debt-entry" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
-        <Stack.Screen name="quick" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
         <Stack.Screen name="quick-edit" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
       </Stack>
     </NavThemeProvider>

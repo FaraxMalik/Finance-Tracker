@@ -13,6 +13,7 @@ import {
   listAllTransactions,
   listCycles,
   listTags,
+  setCategoryOnTransactions,
   setTagOnTransactions,
   type Tx,
 } from '@/db/queries';
@@ -23,6 +24,7 @@ import {
   activeFilterCount,
   applyFilters,
   groupByDate,
+  NONE,
   NO_FILTERS,
   summarize,
   type Filters,
@@ -93,6 +95,10 @@ export default function AllEntriesScreen() {
     await setTagOnTransactions(db, [...(picked ?? [])], tagId, on);
     await reload();
   };
+  const categorizePicked = async (accountId: number) => {
+    await setCategoryOnTransactions(db, [...(picked ?? [])], accountId);
+    await reload();
+  };
   const createTagAndApply = async () => {
     const name = newTag.trim();
     if (!name) return;
@@ -101,6 +107,8 @@ export default function AllEntriesScreen() {
     await tagPicked(id, true);
   };
   const [open, setOpen] = useState(false);
+  const toggleIn = (key: 'categories' | 'banks' | 'tags', id: number) =>
+    setFilters((f) => ({ ...f, [key]: f[key].includes(id) ? f[key].filter((x) => x !== id) : [...f[key], id] }));
   const set = (patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch }));
 
   const txs = data?.txs;
@@ -192,50 +200,42 @@ export default function AllEntriesScreen() {
             ))}
           </FilterGroup>
 
-          <FilterGroup label="Category">
-            <Chip label="All" selected={filters.category === 'all'} onPress={() => set({ category: 'all' })} />
+          <FilterGroup label="Category (pick any)">
             {categoryOptions.map((cat) => (
               <Chip
                 key={cat.id}
                 label={cat.name}
                 dot={categoryColor(cat.name, cat.kind, c)}
-                selected={filters.category === cat.id}
-                onPress={() => set({ category: cat.id })}
+                selected={filters.categories.includes(cat.id)}
+                onPress={() => toggleIn('categories', cat.id)}
               />
             ))}
             {hasUncategorised ? (
               <Chip
                 label="Uncategorised"
-                selected={filters.category === 'none'}
-                onPress={() => set({ category: 'none' })}
+                selected={filters.categories.includes(NONE)}
+                onPress={() => toggleIn('categories', NONE)}
               />
             ) : null}
           </FilterGroup>
 
-          <FilterGroup label="Bank">
-            <Chip label="All" selected={filters.bank === 'all'} onPress={() => set({ bank: 'all' })} />
+          <FilterGroup label="Bank (pick any)">
             {bankOptions.map(([id, name]) => (
-              <Chip key={id} label={name} selected={filters.bank === id} onPress={() => set({ bank: id })} />
+              <Chip key={id} label={name} selected={filters.banks.includes(id)} onPress={() => toggleIn('banks', id)} />
             ))}
             {hasNoBank ? (
-              <Chip label="No bank" selected={filters.bank === 'none'} onPress={() => set({ bank: 'none' })} />
+              <Chip label="No bank" selected={filters.banks.includes(NONE)} onPress={() => toggleIn('banks', NONE)} />
             ) : null}
           </FilterGroup>
 
           {data.tags.length ? (
-            <FilterGroup label="Tags (entry must have all)">
+            <FilterGroup label="Tags (pick any)">
               {data.tags.map((tag) => (
                 <Chip
                   key={tag.id}
                   label={tag.name}
                   selected={filters.tags.includes(tag.id)}
-                  onPress={() =>
-                    set({
-                      tags: filters.tags.includes(tag.id)
-                        ? filters.tags.filter((id) => id !== tag.id)
-                        : [...filters.tags, tag.id],
-                    })
-                  }
+                  onPress={() => toggleIn('tags', tag.id)}
                 />
               ))}
             </FilterGroup>
@@ -262,7 +262,7 @@ export default function AllEntriesScreen() {
         </View>
       ) : null}
 
-      <View style={styles.summary}>
+      <View style={[styles.summary, styles.summaryCard]}>
         <Txt variant="small">
           {totals.count} {totals.count === 1 ? 'entry' : 'entries'}
           {count > 0 ? ' match' : ''}
@@ -361,6 +361,20 @@ export default function AllEntriesScreen() {
               ) : null}
             </View>
           </Row>
+          <Txt variant="label">Move expenses to a category</Txt>
+          <ChipRow>
+            {data.categories
+              .filter((cat) => !cat.archived)
+              .map((cat) => (
+                <Chip
+                  key={cat.id}
+                  label={cat.name}
+                  dot={categoryColor(cat.name, cat.kind, c)}
+                  selected={false}
+                  onPress={() => categorizePicked(cat.id)}
+                />
+              ))}
+          </ChipRow>
           <Txt variant="label">Add or remove a tag</Txt>
           <ChipRow>
             {data.tags.map((tag) => {
@@ -430,6 +444,13 @@ const makeStyles = (c: Palette) =>
       alignItems: 'center',
       flexWrap: 'wrap',
       gap: Spacing.two,
+    },
+    summaryCard: {
+      padding: Spacing.three,
+      borderRadius: Radius.lg,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface,
     },
     footer: {
       gap: Spacing.two,
