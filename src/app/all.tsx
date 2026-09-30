@@ -1,11 +1,21 @@
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useMemo, useState, type ReactNode } from 'react';
 import { SectionList, StyleSheet, TextInput, View } from 'react-native';
 
 import { TxRow } from '@/components/tx-row';
 import { Button, Chip, ChipRow, Empty, ModalHeader, Row, Screen, Txt } from '@/components/ui';
 import { Radius, Spacing, withAlpha, type Palette } from '@/constants/theme';
-import { listAccounts, listAllTransactions, listCycles, type Tx } from '@/db/queries';
+import { useSQLiteContext } from 'expo-sqlite';
+
+import {
+  findOrCreateTag,
+  listAccounts,
+  listAllTransactions,
+  listCycles,
+  listTags,
+  setTagOnTransactions,
+  type Tx,
+} from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
 import { useStyles, useTheme } from '@/hooks/use-theme';
 import { diffDays, shortDate, todayISO, weekdayShort } from '@/lib/dates';
@@ -52,16 +62,44 @@ export default function AllEntriesScreen() {
   const styles = useStyles(makeStyles);
   const router = useRouter();
 
-  const { data } = useFocusLoad(async (db) => {
-    const [txs, cycles, categories] = await Promise.all([
+  const { data, reload } = useFocusLoad(async (db) => {
+    const [txs, cycles, categories, tags] = await Promise.all([
       listAllTransactions(db),
       listCycles(db),
       listAccounts(db, true),
+      listTags(db),
     ]);
-    return { txs, cycles, categories };
+    return { txs, cycles, categories, tags };
   });
+  const db = useSQLiteContext();
+  const params = useLocalSearchParams<{ tag?: string; period?: string }>();
 
-  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  const [filters, setFilters] = useState<Filters>(() => ({
+    ...NO_FILTERS,
+    tags: params.tag ? [Number(params.tag)] : [],
+    period: params.period === 'cycle' ? 'cycle' : 'all',
+  }));
+  const [picked, setPicked] = useState<Set<number> | null>(null);
+  const [newTag, setNewTag] = useState('');
+  const selecting = picked !== null;
+  const toggle = (id: number) =>
+    setPicked((p) => {
+      const next = new Set(p);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const tagPicked = async (tagId: number, on: boolean) => {
+    await setTagOnTransactions(db, [...(picked ?? [])], tagId, on);
+    await reload();
+  };
+  const createTagAndApply = async () => {
+    const name = newTag.trim();
+    if (!name) return;
+    const id = await findOrCreateTag(db, name);
+    setNewTag('');
+    await tagPicked(id, true);
+  };
   const [open, setOpen] = useState(false);
   const set = (patch: Partial<Filters>) => setFilters((f) => ({ ...f, ...patch }));
 
@@ -74,6 +112,7 @@ export default function AllEntriesScreen() {
   );
   const rows = useMemo(() => (txs ? applyFilters(txs, filters, ctx) : []), [txs, filters, ctx]);
   const totals = useMemo(() => summarize(rows), [rows]);
+  const pickedTotals = useMemo(() => summarize(rows.filter((t) => picked?.has(t.id))), [rows, picked]);
 
   const sections: Section[] = useMemo(() => {
     if (filters.sort === 'largest') return rows.length ? [{ key: 'all', date: null, spent: 0, data: rows }] : [];
@@ -183,6 +222,25 @@ export default function AllEntriesScreen() {
             ) : null}
           </FilterGroup>
 
+          {data.tags.length ? (
+            <FilterGroup label="Tags (entry must have all)">
+              {data.tags.map((tag) => (
+                <Chip
+                  key={tag.id}
+                  label={tag.name}
+                  selected={filters.tags.includes(tag.id)}
+                  onPress={() =>
+                    set({
+                      tags: filters.tags.includes(tag.id)
+                        ? filters.tags.filter((id) => id !== tag.id)
+                        : [...filters.tags, tag.id],
+                    })
+                  }
+                />
+              ))}
+            </FilterGroup>
+          ) : null}
+
           <FilterGroup label="Sort">
             {SORTS.map((o) => (
               <Chip
@@ -210,9 +268,14 @@ export default function AllEntriesScreen() {
           {count > 0 ? ' match' : ''}
         </Txt>
         <View style={{ flexDirection: 'row', gap: Spacing.three }}>
-          {totals.expenses > 0 ? (
+          {totals.paid > 0 ? (
             <Txt variant="small" style={{ fontWeight: '600' }} color={c.text}>
-              Spent {formatPKR(totals.expenses)}
+              Paid {formatPKR(totals.paid)}
+            </Txt>
+          ) : null}
+          {totals.expenses > 0 && totals.expenses !== totals.paid ? (
+            <Txt variant="small" style={{ fontWeight: '600' }} color={c.text}>
+              Mine {formatPKR(totals.expenses)}
             </Txt>
           ) : null}
           {totals.income > 0 ? (
@@ -228,6 +291,24 @@ export default function AllEntriesScreen() {
   return (
     <Screen scroll={false} style={{ gap: Spacing.three }}>
       <ModalHeader title="All entries" subtitle={count > 0 ? 'Filtered' : `Everything you've recorded`} />
+      <Row>
+        {selecting ? (
+          <>
+            <Txt variant="dim" style={{ flex: 1 }}>
+              {picked.size} selected
+            </Txt>
+            <Chip label="Select all shown" selected={false} onPress={() => setPicked(new Set(rows.map((t) => t.id)))} />
+            <Chip label="Done" selected onPress={() => setPicked(null)} />
+          </>
+        ) : (
+          <>
+            <Txt variant="small" style={{ flex: 1 }}>
+              Hold an entry to select several.
+            </Txt>
+            <Chip label="Select" selected={false} onPress={() => setPicked(new Set())} />
+          </>
+        )}
+      </Row>
       <SectionList
         sections={sections}
         keyExtractor={(t) => String(t.id)}
@@ -249,7 +330,11 @@ export default function AllEntriesScreen() {
             tx={item}
             showDate={section.date === null}
             last={index === section.data.length - 1}
-            onPress={() => router.push({ pathname: '/add', params: { id: String(item.id) } })}
+            selected={selecting ? picked.has(item.id) : undefined}
+            onLongPress={() => (selecting ? toggle(item.id) : setPicked(new Set([item.id])))}
+            onPress={() =>
+              selecting ? toggle(item.id) : router.push({ pathname: '/add', params: { id: String(item.id) } })
+            }
           />
         )}
         ListEmptyComponent={
@@ -265,6 +350,44 @@ export default function AllEntriesScreen() {
           </View>
         }
       />
+      {selecting && picked.size > 0 ? (
+        <View style={styles.footer}>
+          <Row>
+            <View style={{ flex: 1 }}>
+              <Txt variant="small">{picked.size} selected</Txt>
+              <Txt style={{ fontWeight: '700' }}>Paid {formatPKR(pickedTotals.paid)}</Txt>
+              {pickedTotals.expenses !== pickedTotals.paid ? (
+                <Txt variant="small">Mine {formatPKR(pickedTotals.expenses)}</Txt>
+              ) : null}
+            </View>
+          </Row>
+          <Txt variant="label">Add or remove a tag</Txt>
+          <ChipRow>
+            {data.tags.map((tag) => {
+              const chosen = [...picked].map((id) => txs.find((t) => t.id === id)).filter((t): t is Tx => !!t);
+              const all = chosen.every((t) => (t.tag_ids ?? '').split(',').includes(String(tag.id)));
+              return <Chip key={tag.id} label={tag.name} selected={all} onPress={() => tagPicked(tag.id, !all)} />;
+            })}
+          </ChipRow>
+          <View style={styles.search}>
+            <TextInput
+              value={newTag}
+              onChangeText={setNewTag}
+              placeholder="New tag, e.g. Goa trip"
+              placeholderTextColor={withAlpha(c.textDim, 0.6)}
+              selectionColor={c.text}
+              returnKeyType="done"
+              onSubmitEditing={createTagAndApply}
+              style={[styles.searchInput, { fontFamily: fonts.regular }]}
+            />
+            {newTag.trim() ? (
+              <Txt variant="dim" style={{ fontWeight: '600' }} onPress={createTagAndApply}>
+                Add
+              </Txt>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
     </Screen>
   );
 }
@@ -307,6 +430,14 @@ const makeStyles = (c: Palette) =>
       alignItems: 'center',
       flexWrap: 'wrap',
       gap: Spacing.two,
+    },
+    footer: {
+      gap: Spacing.two,
+      padding: Spacing.three,
+      borderRadius: Radius.lg,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface,
     },
     dayHeader: {
       flexDirection: 'row',

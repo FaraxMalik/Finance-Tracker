@@ -2,7 +2,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { Alert, StyleSheet, View } from 'react-native';
 
-import { ArrowDownIcon, ArrowUpIcon, TrashIcon } from '@/components/icons';
+import { ArrowDownIcon, ArrowUpIcon, ChevronIcon, TrashIcon } from '@/components/icons';
 import { Avatar, Button, Card, Empty, ModalHeader, Press, Reveal, Screen, SectionTitle, Txt } from '@/components/ui';
 import { Spacing, type Palette } from '@/constants/theme';
 import { useColors, useStyles } from '@/hooks/use-theme';
@@ -49,17 +49,23 @@ export default function PersonScreen() {
     ]);
 
   const confirmDeletePerson = () =>
-    Alert.alert(`Delete ${person.name}?`, 'This removes them and their whole history.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          await deletePerson(db, personId);
-          router.back();
+    Alert.alert(
+      `Delete ${person.name}?`,
+      entries.some((e) => e.tx_id !== null)
+        ? 'This removes them and their whole history. Expenses you paid for them will count fully as your spending again.'
+        : 'This removes them and their whole history.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await deletePerson(db, personId);
+            router.back();
+          },
         },
-      },
-    ]);
+      ],
+    );
 
   const tone = person.balance > 0 ? c.income : person.balance < 0 ? c.danger : c.textDim;
 
@@ -95,12 +101,17 @@ export default function PersonScreen() {
             entries.map((e, n) => {
               const moneyIn = DEBT_FLOW[e.kind] === 'in';
               return (
-                <View key={e.id} style={[styles.entry, n < entries.length - 1 && styles.divider]}>
+                <Press
+                  key={e.id}
+                  onPress={
+                    e.tx_id ? () => router.push({ pathname: '/add', params: { id: String(e.tx_id) } }) : undefined
+                  }
+                  style={[styles.entry, n < entries.length - 1 && styles.divider]}>
                   <Avatar size={36}>
                     {moneyIn ? <ArrowDownIcon color={c.text} size={17} /> : <ArrowUpIcon color={c.text} size={17} />}
                   </Avatar>
                   <View style={{ flex: 1, gap: 2 }}>
-                    <Txt style={{ fontWeight: '600' }}>{DEBT_LABEL[e.kind]}</Txt>
+                    <Txt style={{ fontWeight: '600' }}>{e.tx_id ? 'I paid for them' : DEBT_LABEL[e.kind]}</Txt>
                     <Txt variant="small" numberOfLines={1}>
                       {longDate(e.date)}
                       {e.note ? ` · ${e.note}` : ''}
@@ -110,13 +121,19 @@ export default function PersonScreen() {
                     {moneyIn ? '+' : '-'}
                     {formatPKR(e.amount)}
                   </Txt>
-                  <Press
-                    onPress={() => confirmDeleteEntry(e.id)}
-                    accessibilityLabel="Delete entry"
-                    style={styles.trash}>
-                    <TrashIcon color={c.textDim} size={17} />
-                  </Press>
-                </View>
+                  {e.tx_id ? (
+                    <View style={styles.trash}>
+                      <ChevronIcon color={c.textDim} size={16} />
+                    </View>
+                  ) : (
+                    <Press
+                      onPress={() => confirmDeleteEntry(e.id)}
+                      accessibilityLabel="Delete entry"
+                      style={styles.trash}>
+                      <TrashIcon color={c.textDim} size={17} />
+                    </Press>
+                  )}
+                </Press>
               );
             })
           )}

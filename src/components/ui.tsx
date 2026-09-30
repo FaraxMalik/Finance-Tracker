@@ -263,6 +263,7 @@ export function Dot({ color, size = 8 }: { color: string; size?: number }) {
 export function Press({
   children,
   onPress,
+  onLongPress,
   style,
   disabled,
   haptic = true,
@@ -270,6 +271,7 @@ export function Press({
 }: {
   children: ReactNode;
   onPress?: () => void;
+  onLongPress?: () => void;
   style?: StyleProp<ViewStyle>;
   disabled?: boolean;
   haptic?: boolean;
@@ -280,6 +282,14 @@ export function Press({
       {...rest}
       accessibilityRole="button"
       disabled={disabled || !onPress}
+      onLongPress={
+        onLongPress
+          ? () => {
+              if (haptic) tap();
+              onLongPress();
+            }
+          : undefined
+      }
       onPress={() => {
         if (haptic) tap();
         onPress?.();

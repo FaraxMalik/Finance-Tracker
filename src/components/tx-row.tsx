@@ -40,6 +40,14 @@ function txSubtitle(tx: Tx, withDate = true): string {
   if (tx.type === 'expense') {
     parts.push(tx.account_name ?? 'Uncategorised');
     if (tx.bank_name) parts.push(tx.bank_name);
+    if (tx.shared_with) parts.push(`with ${tx.shared_with}`);
+    if (tx.tag_names)
+      parts.push(
+        tx.tag_names
+          .split(',')
+          .map((n) => `#${n}`)
+          .join(' '),
+      );
   } else if (tx.type === 'card_payment') {
     parts.push(tx.bank_name ? `from ${tx.bank_name}` : 'bill payment');
   } else if (tx.type === 'card_swipe') {
@@ -60,12 +68,17 @@ function txSubtitle(tx: Tx, withDate = true): string {
 export function TxRow({
   tx,
   onPress,
+  onLongPress,
+  selected,
   last,
   cardView,
   showDate = true,
 }: {
   tx: Tx;
   onPress?: () => void;
+  onLongPress?: () => void;
+  /** Set (true or false) while picking several entries: shows a tick box. */
+  selected?: boolean;
   last?: boolean;
   cardView?: boolean;
   /** Hide the date when the row already sits under a date heading. */
@@ -82,7 +95,21 @@ export function TxRow({
   const subtitle = online ? (showDate ? `Online · ${relativeDate(tx.date)}` : 'Online') : txSubtitle(tx, showDate);
 
   return (
-    <Press onPress={onPress} style={[styles.row, !last && styles.divider]}>
+    <Press
+      onPress={onPress}
+      onLongPress={onLongPress}
+      style={[styles.row, !last && styles.divider, selected && { backgroundColor: c.surface }]}>
+      {selected !== undefined ? (
+        <View
+          style={[
+            styles.check,
+            { borderColor: selected ? c.accent : c.border, backgroundColor: selected ? c.accent : 'transparent' },
+          ]}>
+          {selected ? (
+            <Txt style={{ color: c.onAccent, fontSize: 12, lineHeight: 14, fontWeight: '700' }}>✓</Txt>
+          ) : null}
+        </View>
+      ) : null}
       <View style={styles.dotSlot}>{dot ? <Dot color={dot} /> : null}</View>
       <View style={{ flex: 1, gap: 2 }}>
         <Txt numberOfLines={1} style={{ fontWeight: '600' }}>
@@ -97,6 +124,11 @@ export function TxRow({
           {sign}
           {formatPKR(tx.amount)}
         </Txt>
+        {tx.type === 'expense' && tx.shared > 0 ? (
+          <Txt variant="small" numberOfLines={1}>
+            yours {formatPKR(tx.amount - tx.shared)}
+          </Txt>
+        ) : null}
         {hasFee ? (
           <Txt variant="small" color={c.warn}>
             fee {formatPKR(tx.fee)}
@@ -111,5 +143,6 @@ const makeStyles = (c: Palette) =>
   StyleSheet.create({
     row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three - 4, paddingVertical: Spacing.three - 2 },
     divider: { borderBottomWidth: 1, borderBottomColor: c.border },
+    check: { width: 20, height: 20, borderRadius: 6, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
     dotSlot: { width: 10, alignItems: 'center' },
   });

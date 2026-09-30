@@ -4,22 +4,30 @@ import { useEffect, useState } from 'react';
 import { Alert, StyleSheet, TextInput, View } from 'react-native';
 
 import { DateChips } from '@/components/date-chips';
-import { Button, Card, Chip, ChipRow, Field, ModalHeader, Press, Screen, Txt } from '@/components/ui';
+import { Button, Card, Chip, ChipRow, Divider, Field, ModalHeader, Press, Row, Screen, Txt } from '@/components/ui';
 import { Radius, Spacing, withAlpha, type Palette } from '@/constants/theme';
 import {
   addTransaction,
   deleteTransaction,
+  findOrCreatePerson,
+  findOrCreateTag,
   getActiveCycle,
   getNumberSetting,
   getTransaction,
   listAccounts,
   listBanks,
+  listPeople,
   listQuick,
+  listShares,
+  listTags,
   setSetting,
   updateTransaction,
   type Account,
   type Bank,
+  type Person,
   type QuickExpense,
+  type Share,
+  type Tag,
   type TxType,
 } from '@/db/queries';
 import { useStyles, useTheme } from '@/hooks/use-theme';
@@ -27,6 +35,16 @@ import { todayISO } from '@/lib/dates';
 import { success } from '@/lib/haptics';
 import { categoryColor } from '@/lib/labels';
 import { formatPKR, fromPaisa, toPaisa } from '@/lib/money';
+import { splitExpense, type SplitMode } from '@/lib/split';
+
+/** A friend an expense was paid for. `personId` is null for someone typed in who isn't saved yet. */
+type Who = { key: string; name: string; personId: number | null };
+
+const SPLIT_MODES: { mode: SplitMode; label: string }[] = [
+  { mode: 'equal', label: 'Equal, with me' },
+  { mode: 'others', label: 'All on them' },
+  { mode: 'custom', label: 'Custom' },
+];
 
 type TypeOption = { type: TxType; label: string; save: string };
 
@@ -94,6 +112,15 @@ export default function AddScreen() {
   const [source, setSource] = useState('');
   const [note, setNote] = useState('');
 
+  const [people, setPeople] = useState<Person[]>([]);
+  const [who, setWho] = useState<Who[]>([]);
+  const [newName, setNewName] = useState('');
+  const [splitMode, setSplitMode] = useState<SplitMode>('equal');
+  const [customBy, setCustomBy] = useState<Record<string, string>>({});
+
+  const [allTags, setAllTags] = useState<Tag[]>([]);
+  const [tagIds, setTagIds] = useState<number[]>([]);
+  const [newTag, setNewTag] = useState('');
   const [categories, setCategories] = useState<Account[]>([]);
   const [banks, setBanks] = useState<Bank[]>([]);
   const [quick, setQuick] = useState<QuickExpense[]>([]);
@@ -108,6 +135,8 @@ export default function AddScreen() {
       setCategories(cats);
       setBanks(bks);
       setQuick(await listQuick(db));
+      setPeople(await listPeople(db));
+      setAllTags(await listTags(db));
       setCycleId(cycle?.id ?? null);
       const cash = bks.find((b) => b.name.toLowerCase() === 'cash' && !b.archived);
 
@@ -126,6 +155,13 @@ export default function AddScreen() {
         setPlace(tx.place ?? '');
         setSource(tx.source ?? '');
         setNote(tx.note ?? '');
+        setTagIds((tx.tag_ids ?? '').split(',').filter(Boolean).map(Number));
+        const shares = await listShares(db, editingId);
+        if (shares.length) {
+          setWho(shares.map((x) => ({ key: `p${x.person_id}`, name: x.name, personId: x.person_id })));
+          setSplitMode('custom');
+          setCustomBy(Object.fromEntries(shares.map((x) => [`p${x.person_id}`, fromPaisa(x.amount)])));
+        }
       } else if (params.type === 'card_withdrawal') {
         // A withdrawal hands you cash.
         if (cash) setBankId(cash.id);
@@ -163,6 +199,55 @@ export default function AddScreen() {
   const bank = onCard ? null : (bankChoices.find((b) => b.id === bankId) ?? null);
   const hasFee = type === 'card_swipe' || type === 'card_withdrawal';
 
+  const totalPaisa = toPaisa(amount);
+  const customPaisa = who.map((x) => toPaisa(customBy[x.key] ?? ''));
+  const split = splitExpense(totalPaisa, who.length, splitMode, customPaisa);
+  const overShared = who.length > 0 && split.mine < 0;
+
+  const togglePerson = (p: Person) =>
+    setWho((w) =>
+      w.some((x) => x.personId === p.id)
+        ? w.filter((x) => x.personId !== p.id)
+        : [...w, { key: `p${p.id}`, name: p.name, personId: p.id }],
+    );
+
+  const addNewPerson = () => {
+    const name = newName.trim();
+    if (!name) return;
+    const known = people.find((p) => p.name.toLowerCase() === name.toLowerCase());
+    setWho((w) =>
+      w.some((x) => x.name.toLowerCase() === name.toLowerCase())
+        ? w
+        : [
+            ...w,
+            known
+              ? { key: `p${known.id}`, name: known.name, personId: known.id }
+              : { key: `n${name.toLowerCase()}`, name, personId: null },
+          ],
+    );
+    setNewName('');
+  };
+
+  const toggleTag = (id: number) => setTagIds((t) => (t.includes(id) ? t.filter((x) => x !== id) : [...t, id]));
+
+  const addNewTag = async () => {
+    const name = newTag.trim();
+    if (!name) return;
+    const id = await findOrCreateTag(db, name);
+    setAllTags(await listTags(db));
+    setTagIds((t) => (t.includes(id) ? t : [...t, id]));
+    setNewTag('');
+  };
+
+  const chooseSplitMode = (mode: SplitMode) => {
+    if (locked) return;
+    if (mode === 'custom') {
+      // Start the custom amounts from the current split so only the odd one out needs typing.
+      setCustomBy(Object.fromEntries(who.map((x, i) => [x.key, split.others[i] ? fromPaisa(split.others[i]) : ''])));
+    }
+    setSplitMode(mode);
+  };
+
   const save = async () => {
     const amountPaisa = toPaisa(amount);
     if (amountPaisa <= 0) return setError('Enter an amount greater than zero.');
@@ -170,10 +255,20 @@ export default function AddScreen() {
       return setError('Mark one category as Credit in Settings first, so card purchases have a home.');
     const feePaisa = hasFee ? toPaisa(fee) : 0;
     if (feePaisa > amountPaisa) return setError('The fee cannot be bigger than the amount.');
+    if (type === 'expense' && overShared) return setError('The friends’ shares add up to more than you paid.');
     if (!cycleId) return;
 
     setSaving(true);
+    const shares: Share[] = [];
+    if (type === 'expense') {
+      for (const [i, x] of who.entries()) {
+        const person_id = x.personId ?? (await findOrCreatePerson(db, x.name));
+        shares.push({ person_id, amount: split.others[i] });
+      }
+    }
     const input = {
+      shares,
+      tags: type === 'expense' ? tagIds : [],
       type,
       amount: amountPaisa,
       fee: feePaisa,
@@ -398,6 +493,139 @@ export default function AddScreen() {
         </View>
       ) : null}
 
+      {type === 'expense' ? (
+        <View style={{ gap: Spacing.two + 2 }}>
+          <Txt variant="label">
+            Paid for others<Txt variant="small">{'   optional'}</Txt>
+          </Txt>
+          {people.length > 0 || who.length > 0 ? (
+            <ChipRow>
+              {people.map((p) => (
+                <Chip
+                  key={p.id}
+                  label={p.name}
+                  selected={who.some((x) => x.personId === p.id)}
+                  onPress={() => !locked && togglePerson(p)}
+                />
+              ))}
+              {who
+                .filter((x) => x.personId === null)
+                .map((x) => (
+                  <Chip
+                    key={x.key}
+                    label={x.name}
+                    selected
+                    onPress={() => !locked && setWho((w) => w.filter((y) => y.key !== x.key))}
+                  />
+                ))}
+            </ChipRow>
+          ) : null}
+
+          {locked ? null : (
+            <Row>
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  value={newName}
+                  onChangeText={setNewName}
+                  onSubmitEditing={addNewPerson}
+                  placeholder="Add a friend by name"
+                  placeholderTextColor={withAlpha(c.textDim, 0.6)}
+                  selectionColor={c.text}
+                  returnKeyType="done"
+                  style={[styles.friendInput, { fontFamily: fonts.regular }]}
+                />
+              </View>
+              <Button label="Add" variant="ghost" onPress={addNewPerson} disabled={!newName.trim()} />
+            </Row>
+          )}
+
+          {who.length > 0 ? (
+            <Card style={{ gap: Spacing.three }}>
+              <ChipRow>
+                {SPLIT_MODES.map((m) => (
+                  <Chip
+                    key={m.mode}
+                    label={m.label}
+                    selected={splitMode === m.mode}
+                    onPress={() => chooseSplitMode(m.mode)}
+                  />
+                ))}
+              </ChipRow>
+              <View>
+                {who.map((x, i) => (
+                  <View key={x.key}>
+                    <Row style={{ justifyContent: 'space-between', paddingVertical: Spacing.two }}>
+                      <Txt numberOfLines={1} style={{ flex: 1, fontWeight: '600' }}>
+                        {x.name}
+                      </Txt>
+                      {splitMode === 'custom' ? (
+                        <TextInput
+                          value={customBy[x.key] ?? ''}
+                          onChangeText={(v) => {
+                            setCustomBy((m) => ({ ...m, [x.key]: v }));
+                            setError(null);
+                          }}
+                          editable={!locked}
+                          placeholder="0"
+                          placeholderTextColor={withAlpha(c.textDim, 0.4)}
+                          keyboardType="decimal-pad"
+                          selectionColor={c.text}
+                          style={[styles.shareInput, { fontFamily: fonts.regular }]}
+                        />
+                      ) : (
+                        <Txt style={{ fontWeight: '600' }}>{formatPKR(split.others[i])}</Txt>
+                      )}
+                    </Row>
+                    <Divider />
+                  </View>
+                ))}
+                <Row style={{ justifyContent: 'space-between', paddingVertical: Spacing.two }}>
+                  <Txt variant="dim">Your share</Txt>
+                  <Txt style={{ fontWeight: '700' }} color={overShared ? c.danger : c.text}>
+                    {formatPKR(split.mine)}
+                  </Txt>
+                </Row>
+              </View>
+              <Txt variant="small" color={overShared ? c.danger : undefined}>
+                {overShared
+                  ? 'These add up to more than you paid.'
+                  : 'They will owe you their share under Debts. Only your share counts as your spending.'}
+              </Txt>
+            </Card>
+          ) : null}
+        </View>
+      ) : null}
+
+      {type === 'expense' ? (
+        <View style={{ gap: Spacing.two + 2 }}>
+          <Txt variant="label">
+            Tags<Txt variant="small">{'   optional, each tag keeps its own total'}</Txt>
+          </Txt>
+          {allTags.length > 0 ? (
+            <ChipRow>
+              {allTags.map((t) => (
+                <Chip key={t.id} label={t.name} selected={tagIds.includes(t.id)} onPress={() => toggleTag(t.id)} />
+              ))}
+            </ChipRow>
+          ) : null}
+          <Row>
+            <View style={{ flex: 1 }}>
+              <TextInput
+                value={newTag}
+                onChangeText={setNewTag}
+                onSubmitEditing={addNewTag}
+                placeholder="New tag, e.g. Goa trip"
+                placeholderTextColor={withAlpha(c.textDim, 0.6)}
+                selectionColor={c.text}
+                returnKeyType="done"
+                style={[styles.friendInput, { fontFamily: fonts.regular }]}
+              />
+            </View>
+            <Button label="Add" variant="ghost" onPress={addNewTag} disabled={!newTag.trim()} />
+          </Row>
+        </View>
+      ) : null}
+
       <DateChips value={date} onChange={(d) => setDate(d ?? todayISO())} />
 
       <Field
@@ -430,6 +658,25 @@ const makeStyles = (c: Palette) =>
       borderBottomWidth: 1,
       borderBottomColor: c.border,
       paddingBottom: 4,
+    },
+    friendInput: {
+      color: c.text,
+      borderWidth: 1,
+      borderColor: c.border,
+      borderRadius: Radius.md,
+      backgroundColor: c.surface,
+      paddingHorizontal: Spacing.three,
+      minHeight: 50,
+      fontSize: 15,
+    },
+    shareInput: {
+      minWidth: 110,
+      textAlign: 'right',
+      color: c.text,
+      borderBottomWidth: 1,
+      borderBottomColor: c.border,
+      paddingVertical: 4,
+      fontSize: 15,
     },
     amountInput: {
       flex: 1,

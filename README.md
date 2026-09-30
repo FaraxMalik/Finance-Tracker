@@ -33,6 +33,14 @@ _Shown with demo data._
   you pick another. Add your own with **+ New**.
 - **All entries**: every entry across all cycles, grouped by day. Filter by type, period, category and bank, search,
   and sort. Totals for what is on screen.
+- **Paid for friends**: on any expense, pick the friends you paid for and split it equally, all on them, or with
+  custom amounts. Their shares go straight into their balance under Debts; only your own share counts as your
+  spending.
+- **Two main totals**: **Total paid** (everything you entered) and **My spending** (leaves out what you paid for
+  friends, which you get back).
+- **Tags**: your own groups, such as a trip. Tag an expense while adding it, or hold an entry in All entries, select
+  several and tag them together; the selection shows its own total. Each tag has its own total on Home, and All
+  entries can filter by several tags at once.
 - **Debts**: who owes you and whom you owe, with a history per person.
 - **Monthly reports** as tables, exportable as CSV, and **backup / restore** to a JSON file.
 - **Light, dark or system theme** and three typefaces (Mono, Serif, Classic), all in Settings.
@@ -46,6 +54,12 @@ _Shown with demo data._
   Credit Card). A **card payment** lowers what you owe and is a transfer, not spending.
 - **Online** is not a separate type: it is an expense filed under the Credit Card category, so an expense entered on
   Home with that category also appears on the Credit screen.
+- **Paying for friends**: the expense keeps the full amount that left your bank or card (so balances stay right), and
+  each friend's share is saved as an "I lent" entry linked to it. Spending, category, bank and daily totals count
+  only your share. When they pay you back, record it on their page; that never changes your spending.
+- **Total paid** is every expense at its full amount; **My spending** subtracts friends' shares. Tags sit beside
+  these two: a tag total is informational and never changes them.
+- **Backup / restore** moves everything (entries, friends, debts, tags, settings) to a new phone.
 - Amounts are stored as integer paisa, never floats.
 
 ## Getting started

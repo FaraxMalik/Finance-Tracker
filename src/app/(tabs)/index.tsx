@@ -15,6 +15,7 @@ import {
   Empty,
   Header,
   IconButton,
+  Press,
   Reveal,
   Row,
   Screen,
@@ -28,6 +29,7 @@ import {
   getCycleStartDay,
   getCycleTotals,
   getDailySpend,
+  getTagTotals,
   listQuick,
   listTransactions,
 } from '@/db/queries';
@@ -43,18 +45,19 @@ export default function Dashboard() {
   const { data } = useFocusLoad(async (db) => {
     const cycle = (await getActiveCycle(db))!;
     const startDay = await getCycleStartDay(db);
-    const [totals, daily, recent, quick] = await Promise.all([
+    const [totals, daily, recent, quick, tags] = await Promise.all([
       getCycleTotals(db, cycle.id),
       getDailySpend(db, cycle.id),
       listTransactions(db, cycle.id, 5),
       listQuick(db),
+      getTagTotals(db, cycle.id),
     ]);
-    return { cycle, startDay, totals, daily, recent, quick };
+    return { cycle, startDay, totals, daily, recent, quick, tags };
   });
 
   if (!data) return <Screen tabs>{null}</Screen>;
 
-  const { cycle, startDay, totals, daily, recent, quick } = data;
+  const { cycle, startDay, totals, daily, recent, quick, tags } = data;
   const end = nominalEnd(cycle.start_date, startDay);
   const progress = cycleProgress(cycle.start_date, startDay);
   const today = todayISO();
@@ -103,10 +106,23 @@ export default function Dashboard() {
 
       <Reveal index={i++}>
         <View style={{ gap: Spacing.two + 2, paddingVertical: Spacing.two }}>
-          <Txt variant="label">Total spent</Txt>
-          <Txt variant="hero" numberOfLines={1} adjustsFontSizeToFit>
-            {formatPKR(totals.totalSpent)}
-          </Txt>
+          <View style={{ flexDirection: 'row', gap: Spacing.three }}>
+            <View style={{ flex: 1, gap: 4 }}>
+              <Txt variant="label">Total paid</Txt>
+              <Txt variant="title" numberOfLines={1} adjustsFontSizeToFit>
+                {formatPKR(totals.totalPaid)}
+              </Txt>
+              <Txt variant="small">Everything you entered</Txt>
+            </View>
+            <View style={{ width: 1, backgroundColor: c.border }} />
+            <View style={{ flex: 1, gap: 4 }}>
+              <Txt variant="label">My spending</Txt>
+              <Txt variant="title" numberOfLines={1} adjustsFontSizeToFit>
+                {formatPKR(totals.totalSpent)}
+              </Txt>
+              <Txt variant="small">Without friends’ shares</Txt>
+            </View>
+          </View>
           <Txt variant="dim">
             Credit {formatPKR(totals.creditSpent)} · Debit {formatPKR(totals.debitSpent)}
           </Txt>
@@ -137,6 +153,40 @@ export default function Dashboard() {
           </ChipRow>
         </View>
       </Reveal>
+
+      {tags.length > 0 ? (
+        <Reveal index={i++}>
+          <SectionTitle>Tags</SectionTitle>
+          <Card style={{ marginTop: Spacing.two, paddingVertical: Spacing.one }}>
+            {tags.map((t, n) => (
+              <Press
+                key={t.id}
+                onPress={() => router.push({ pathname: '/all', params: { tag: String(t.id), period: 'cycle' } })}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: Spacing.three,
+                  paddingVertical: Spacing.three - 2,
+                  borderBottomWidth: n === tags.length - 1 ? 0 : 1,
+                  borderBottomColor: c.border,
+                }}>
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Txt style={{ fontWeight: '600' }} numberOfLines={1}>
+                    #{t.name}
+                  </Txt>
+                  <Txt variant="small">
+                    {t.count} {t.count === 1 ? 'entry' : 'entries'} this cycle
+                  </Txt>
+                </View>
+                <View style={{ alignItems: 'flex-end', gap: 2 }}>
+                  <Txt style={{ fontWeight: '600' }}>{formatPKR(t.paid)}</Txt>
+                  {t.mine !== t.paid ? <Txt variant="small">mine {formatPKR(t.mine)}</Txt> : null}
+                </View>
+              </Press>
+            ))}
+          </Card>
+        </Reveal>
+      ) : null}
 
       <Reveal index={i++}>
         <SectionTitle>By category</SectionTitle>

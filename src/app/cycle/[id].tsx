@@ -13,6 +13,7 @@ import { useFocusLoad } from '@/hooks/use-focus-load';
 import { cycleLabel, nominalEnd } from '@/lib/cycle';
 import { shortDate } from '@/lib/dates';
 import { shareTextFile, transactionsToCsv } from '@/lib/export';
+import { myShare } from '@/lib/ledger';
 import { formatPKR } from '@/lib/money';
 
 export default function CycleReport() {
@@ -45,7 +46,7 @@ export default function CycleReport() {
   const incoming = txs.filter((t) => t.type === 'income');
   const spending = txs.filter((t) => t.type === 'expense');
   const card = txs.filter((t) => t.type === 'card_payment' || t.type === 'card_swipe' || t.type === 'card_withdrawal');
-  const sum = (list: Tx[]) => list.reduce((s, t) => s + t.amount, 0);
+  const sum = (list: Tx[]) => list.reduce((s, t) => s + myShare(t), 0);
 
   const exportCsv = async () => {
     try {

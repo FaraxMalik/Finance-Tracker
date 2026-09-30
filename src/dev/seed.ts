@@ -163,6 +163,29 @@ export async function seedDemo(db: SQLiteDatabase) {
   const ali = await q.findOrCreatePerson(db, 'Ali Raza');
   const sara = await q.findOrCreatePerson(db, 'Sara Khan');
   const usman = await q.findOrCreatePerson(db, 'Usman');
+  const trip = await q.findOrCreateTag(db, 'Murree trip');
+  await add({
+    type: 'expense',
+    tags: [trip],
+    amount: R(9000),
+    account_id: accounts['Others'],
+    bank_id: bank['Cash'],
+    place: 'Petrol for Murree',
+    date: day(8),
+  });
+  await add({
+    type: 'expense',
+    tags: [trip],
+    amount: R(7500),
+    account_id: accounts['Others'],
+    bank_id: bank['NayaPay'],
+    place: 'Team dinner',
+    date: day(10),
+    shares: [
+      { person_id: ali, amount: R(2500) },
+      { person_id: usman, amount: R(2500) },
+    ],
+  });
   await q.addDebtEntry(db, ali, 'lent', R(15000), day(2), 'For the laptop deposit');
   await q.addDebtEntry(db, ali, 'got_back', R(3000), day(9));
   await q.addDebtEntry(db, sara, 'borrowed', R(5000), day(6), 'Dinner and cab');

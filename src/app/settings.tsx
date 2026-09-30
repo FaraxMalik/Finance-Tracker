@@ -12,12 +12,14 @@ import {
   addBank,
   archiveAccount,
   archiveBank,
+  deleteTag,
   exportBackup,
   getCycleStartDay,
   getNumberSetting,
   listAccounts,
   listBanks,
   listQuick,
+  listTags,
   renameBank,
   restoreBackup,
   setSetting,
@@ -31,7 +33,7 @@ import { todayISO } from '@/lib/dates';
 import { shareTextFile } from '@/lib/export';
 import { fromPaisa, toPaisa } from '@/lib/money';
 
-const FONT_OPTIONS: FontChoice[] = ['mono', 'serif', 'classic'];
+const FONT_OPTIONS: FontChoice[] = ['dm', 'mono', 'serif', 'classic'];
 
 const THEME_OPTIONS: { mode: ThemeMode; label: string }[] = [
   { mode: 'system', label: 'System' },
@@ -54,6 +56,20 @@ export default function SettingsScreen() {
   const [newBank, setNewBank] = useState('');
   const [saved, setSaved] = useState(false);
   const { data: quick } = useFocusLoad((d) => listQuick(d));
+  const { data: tags, reload: reloadTags } = useFocusLoad((d) => listTags(d));
+
+  const removeTag = (id: number, name: string) =>
+    Alert.alert(`Delete tag "${name}"?`, 'It is removed from every entry. The entries themselves stay.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          await deleteTag(db, id);
+          await reloadTags();
+        },
+      },
+    ]);
 
   const loadAccounts = async () => setAccounts(await listAccounts(db));
   const loadBanks = async () => setBanks(await listBanks(db));
@@ -293,11 +309,29 @@ export default function SettingsScreen() {
         <Button label="Add a quick add" variant="ghost" onPress={() => router.push('/quick-edit')} />
       </Card>
 
+      <SectionTitle>Tags</SectionTitle>
+      <Card style={{ gap: Spacing.three }}>
+        <Txt variant="small">
+          Tags are your own groups, such as a trip. Add them while entering an expense, or select several entries in All
+          entries. Each tag gets its own total on Home.
+        </Txt>
+        {(tags ?? []).length === 0 ? <Txt variant="dim">No tags yet.</Txt> : null}
+        {(tags ?? []).map((t) => (
+          <Row key={t.id} style={{ justifyContent: 'space-between' }}>
+            <Txt style={{ fontWeight: '600', flex: 1 }}>#{t.name}</Txt>
+            <Txt variant="dim" color={c.danger} onPress={() => removeTag(t.id, t.name)}>
+              Delete
+            </Txt>
+          </Row>
+        ))}
+      </Card>
+
       <SectionTitle>Backup</SectionTitle>
       <Card>
         <Txt variant="small">
           Your data lives only on this phone. Export a backup now and then and keep it somewhere safe, like Google
-          Drive.
+          Drive. On a new phone, install the app and choose Restore: every entry, friend, debt, tag and setting comes
+          back exactly as it was.
         </Txt>
         <Button label="Export backup" onPress={backup} />
         <Button label="Restore from backup" variant="ghost" onPress={restore} />

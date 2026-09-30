@@ -81,9 +81,20 @@ export type FontSet = {
   displaySpacing: number;
 };
 
-export type FontChoice = 'mono' | 'serif' | 'classic';
+export type FontChoice = 'dm' | 'mono' | 'serif' | 'classic';
 
 export const fontSets: Record<FontChoice, FontSet> = {
+  /** DM Sans: the simple sans used on Faraz's portfolio. */
+  dm: {
+    label: 'DM Sans',
+    regular: 'DMSans_400Regular',
+    medium: 'DMSans_500Medium',
+    semibold: 'DMSans_600SemiBold',
+    bold: 'DMSans_700Bold',
+    display: 'DMSans_600SemiBold',
+    scale: 1,
+    displaySpacing: -0.8,
+  },
   /** Geist Mono: minimal, and digits line up in columns. */
   mono: {
     label: 'Mono',
@@ -119,7 +130,7 @@ export const fontSets: Record<FontChoice, FontSet> = {
   },
 };
 
-export const DEFAULT_FONT: FontChoice = 'mono';
+export const DEFAULT_FONT: FontChoice = 'dm';
 
 /** Custom fonts ship one file per weight, so map a CSS-style weight onto the right family. */
 export function fontForWeight(weight: string | number | undefined, set: FontSet): string {

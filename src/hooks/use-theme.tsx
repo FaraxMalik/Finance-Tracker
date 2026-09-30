@@ -32,7 +32,7 @@ const ThemeContext = createContext<ThemeValue | null>(null);
 const KEY = 'theme_mode';
 const FONT_KEY = 'font_choice';
 
-const isFont = (v: unknown): v is FontChoice => v === 'mono' || v === 'serif' || v === 'classic';
+const isFont = (v: unknown): v is FontChoice => v === 'dm' || v === 'mono' || v === 'serif' || v === 'classic';
 
 const SAVE_SQL =
   'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value';

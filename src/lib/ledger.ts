@@ -15,6 +15,8 @@ export type Filters = {
   /** 'all', 'none' (no bank named) or a bank id. */
   bank: 'all' | 'none' | number;
   period: Period;
+  /** Tag ids an entry must all carry (empty = don't filter by tag). */
+  tags: number[];
   query: string;
   sort: Sort;
 };
@@ -25,16 +27,25 @@ export const NO_FILTERS: Filters = {
   category: 'all',
   bank: 'all',
   period: 'all',
+  tags: [],
   query: '',
   sort: 'newest',
 };
 
 /** How many filters are narrowing the list (sorting doesn't narrow it). */
 export function activeFilterCount(f: Filters): number {
-  return [f.type !== 'all', f.category !== 'all', f.bank !== 'all', f.period !== 'all', f.query.trim() !== ''].filter(
-    Boolean,
-  ).length;
+  return [
+    f.type !== 'all',
+    f.category !== 'all',
+    f.bank !== 'all',
+    f.period !== 'all',
+    f.tags.length > 0,
+    f.query.trim() !== '',
+  ].filter(Boolean).length;
 }
+
+/** What an entry costs you: an expense minus the part you paid on behalf of friends. */
+export const myShare = (t: Tx): number => (t.type === 'expense' ? t.amount - t.shared : t.amount);
 
 const isCardEntry = (t: Tx) => t.type === 'card_payment' || t.type === 'card_swipe' || t.type === 'card_withdrawal';
 
@@ -49,7 +60,7 @@ function matchesQuery(t: Tx, query: string): boolean {
   // "2,300" and "2300" should both find an entry of Rs 2,300.
   const q = query.trim().toLowerCase().replace(/,/g, '');
   if (!q) return true;
-  const hay = [t.place, t.source, t.note, t.account_name, t.bank_name, fromPaisa(t.amount)]
+  const hay = [t.place, t.source, t.note, t.account_name, t.bank_name, t.shared_with, t.tag_names, fromPaisa(t.amount)]
     .filter(Boolean)
     .join(' ')
     .toLowerCase();
@@ -76,6 +87,11 @@ export function applyFilters(txs: Tx[], f: Filters, ctx: FilterContext): Tx[] {
     if (f.period === '7d' && (t.date < from7 || t.date > ctx.today)) return false;
     if (f.period === '30d' && (t.date < from30 || t.date > ctx.today)) return false;
 
+    if (f.tags.length) {
+      const have = (t.tag_ids ?? '').split(',').filter(Boolean).map(Number);
+      if (!f.tags.every((id) => have.includes(id))) return false;
+    }
+
     return matchesQuery(t, f.query);
   });
 
@@ -88,12 +104,15 @@ export function applyFilters(txs: Tx[], f: Filters, ctx: FilterContext): Tx[] {
 /** What the visible rows add up to. Card entries are transfers, so they are only counted, not summed. */
 export function summarize(txs: Tx[]) {
   let expenses = 0;
+  let paid = 0;
   let income = 0;
   for (const t of txs) {
-    if (t.type === 'expense') expenses += t.amount;
-    else if (t.type === 'income') income += t.amount;
+    if (t.type === 'expense') {
+      expenses += myShare(t);
+      paid += t.amount;
+    } else if (t.type === 'income') income += t.amount;
   }
-  return { count: txs.length, expenses, income };
+  return { count: txs.length, expenses, paid, income };
 }
 
 export type DayGroup = { date: string; data: Tx[]; spent: number };
@@ -105,9 +124,9 @@ export function groupByDate(txs: Tx[]): DayGroup[] {
     const last = groups[groups.length - 1];
     if (last && last.date === t.date) {
       last.data.push(t);
-      if (t.type === 'expense') last.spent += t.amount;
+      if (t.type === 'expense') last.spent += myShare(t);
     } else {
-      groups.push({ date: t.date, data: [t], spent: t.type === 'expense' ? t.amount : 0 });
+      groups.push({ date: t.date, data: [t], spent: t.type === 'expense' ? myShare(t) : 0 });
     }
   }
   return groups;

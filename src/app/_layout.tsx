@@ -1,3 +1,4 @@
+import { DMSans_400Regular, DMSans_500Medium, DMSans_600SemiBold, DMSans_700Bold } from '@expo-google-fonts/dm-sans';
 import { Fraunces_500Medium } from '@expo-google-fonts/fraunces';
 import {
   GeistMono_400Regular,
@@ -90,6 +91,10 @@ function ThemedApp() {
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
+    DMSans_400Regular,
+    DMSans_500Medium,
+    DMSans_600SemiBold,
+    DMSans_700Bold,
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,

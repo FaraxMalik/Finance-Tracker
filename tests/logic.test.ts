@@ -12,9 +12,18 @@ import assert from 'node:assert/strict';
 
 import * as q from '@/db/queries';
 import { migrate, SCHEMA_VERSION } from '@/db/schema';
-import { activeFilterCount, applyFilters, groupByDate, NO_FILTERS, summarize, type Filters } from '@/lib/ledger';
+import {
+  activeFilterCount,
+  applyFilters,
+  groupByDate,
+  myShare,
+  NO_FILTERS,
+  summarize,
+  type Filters,
+} from '@/lib/ledger';
 import { currentCycleStart, nextBoundary, nominalEnd, cycleProgress } from '@/lib/cycle';
 import { toPaisa, formatPKR } from '@/lib/money';
+import { splitExpense } from '@/lib/split';
 import { addDays } from '@/lib/dates';
 
 // Minimal expo-sqlite look-alike over node:sqlite
@@ -342,7 +351,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     const { old, c } = await legacyPhone(1);
     await migrate(old);
     const v2 = JSON.parse(JSON.stringify(await q.exportBackup(old)));
-    assert.equal(v2.version, 3);
+    assert.equal(v2.version, 4);
     assert.ok(Array.isArray(v2.banks));
 
     // Build a genuine v1 file: legacy accounts, entries pointing at them, no banks table, no bank_id.
@@ -493,7 +502,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.ok(await d.getFirstAsync("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_tx_cycle'"));
     assert.equal(
       ((await d.getFirstAsync('PRAGMA user_version')) as any).user_version,
-      5,
+      SCHEMA_VERSION,
       'and continues on to the latest version',
     );
   });
@@ -575,7 +584,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
       'seeded once, not twice',
     );
     assert.equal((await q.listTransactions(d, c.id)).length, 1);
-    assert.equal(((await d.getFirstAsync('PRAGMA user_version')) as any).user_version, 5);
+    assert.equal(((await d.getFirstAsync('PRAGMA user_version')) as any).user_version, SCHEMA_VERSION);
   });
 
   await test('backups carry quick-adds; an older backup (none) gets the defaults', async () => {
@@ -583,7 +592,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     await migrate(d);
     await q.addQuick(d, 'Rickshaw', null, null);
     const backup = JSON.parse(JSON.stringify(await q.exportBackup(d)));
-    assert.equal(backup.version, 3);
+    assert.equal(backup.version, 4);
     const d2 = makeDb();
     await migrate(d2);
     await q.restoreBackup(d2, backup);
@@ -818,7 +827,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.equal(sum.income, R(150000));
     assert.deepEqual(
       summarize(f({ type: 'card' })),
-      { count: 2, expenses: 0, income: 0 },
+      { count: 2, expenses: 0, paid: 0, income: 0 },
       'card entries are transfers, so not summed',
     );
 
@@ -834,6 +843,268 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
       groups.reduce((n, g) => n + g.data.length, 0),
       9,
     );
+  });
+
+  await test('split maths: equal, all-on-them and custom always add up to the total', () => {
+    assert.deepEqual(splitExpense(R(3000), 2, 'equal'), { others: [R(1000), R(1000)], mine: R(1000) });
+    const odd = splitExpense(R(1000), 2, 'equal');
+    assert.equal(odd.others[0] + odd.others[1] + odd.mine, R(1000), 'odd paisa are not lost');
+    assert.ok(odd.mine >= odd.others[0], 'the odd paisa stays with you');
+    const all = splitExpense(1001, 2, 'others');
+    assert.deepEqual(all, { others: [501, 500], mine: 0 });
+    assert.deepEqual(splitExpense(R(900), 2, 'custom', [R(400), R(100)]), { others: [R(400), R(100)], mine: R(400) });
+    assert.equal(splitExpense(R(100), 1, 'custom', [R(150)]).mine, -R(50), 'over-sharing shows as negative');
+    assert.deepEqual(splitExpense(R(100), 0, 'equal'), { others: [], mine: R(100) });
+  });
+
+  const sharedSetup = async () => {
+    const d = makeDb();
+    await migrate(d);
+    const c = (await q.getActiveCycle(d))!;
+    const cats = Object.fromEntries((await q.listAccounts(d)).map((a) => [a.name, a.id]));
+    const banks = Object.fromEntries((await q.listBanks(d)).map((b) => [b.name, b.id]));
+    const ali = await q.findOrCreatePerson(d, 'Ali');
+    const sara = await q.findOrCreatePerson(d, 'Sara');
+    return { d, c, cats, banks, ali, sara };
+  };
+
+  await test('paying for friends: only your share is spending; they owe you the rest', async () => {
+    const { d, c, cats, banks, ali, sara } = await sharedSetup();
+    const id = await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(3000),
+      date: '2026-09-10',
+      place: 'Dinner',
+      account_id: cats['Others'],
+      bank_id: banks['NayaPay'],
+      shares: [
+        { person_id: ali, amount: R(1000) },
+        { person_id: sara, amount: R(1000) },
+      ],
+    });
+    await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(500),
+      date: '2026-09-10',
+      account_id: cats['Others'],
+    });
+
+    const t = await q.getCycleTotals(d, c.id);
+    assert.equal(t.totalSpent, R(1000 + 500), 'spending is your share plus the other expense');
+    assert.equal(t.debitSpent, R(1500));
+    assert.equal(t.breakdown.find((b) => b.name === 'Others')!.total, R(1500));
+    assert.equal(t.banks.find((b) => b.name === 'NayaPay')!.total, R(1000));
+    assert.equal(
+      t.breakdown.reduce((s, b) => s + b.total, 0),
+      t.totalSpent,
+      'categories still sum to the total',
+    );
+    assert.deepEqual(
+      (await q.getDailySpend(d, c.id)).map((r) => r.total),
+      [R(1500)],
+    );
+
+    const people = await q.listPeople(d);
+    assert.equal(people.find((p) => p.id === ali)!.balance, R(1000));
+    assert.equal((await q.getDebtTotals(d)).owedToMe, R(2000));
+
+    const tx = (await q.getTransaction(d, id))!;
+    assert.equal(tx.amount, R(3000), 'the expense keeps the full amount that left your account');
+    assert.equal(tx.shared, R(2000));
+    assert.equal(tx.shared_with, 'Ali, Sara');
+    assert.equal(myShare(tx), R(1000));
+    const linked = (await q.listDebtEntries(d, ali))[0];
+    assert.deepEqual([linked.kind, linked.tx_id, linked.date, linked.note], ['lent', id, '2026-09-10', 'Dinner']);
+  });
+
+  await test('paying for friends on the credit card: the card owes the full amount, spending is your share', async () => {
+    const { d, c, cats, ali } = await sharedSetup();
+    await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(10000),
+      date: '2026-09-11',
+      account_id: cats['Credit Card'],
+      shares: [{ person_id: ali, amount: R(4000) }],
+    });
+    const card = await q.getCardSummary(d, c.id);
+    assert.equal(card.owed, R(10000), 'the bank charges you for all of it');
+    assert.equal(card.online, R(10000));
+    assert.equal(card.creditSpent, R(6000), 'your credit spending is only your part');
+    assert.equal((await q.getCycleTotals(d, c.id)).creditSpent, R(6000));
+  });
+
+  await test('paying for friends: editing replaces the shares, leaving them out keeps them, other types drop them', async () => {
+    const { d, c, cats, ali, sara } = await sharedSetup();
+    const base = { type: 'expense' as const, amount: R(600), date: '2026-09-12', account_id: cats['Others'] };
+    const id = await q.addTransaction(d, c.id, { ...base, shares: [{ person_id: ali, amount: R(200) }] });
+
+    await q.updateTransaction(d, id, { ...base, amount: R(900), note: 'edited' });
+    assert.equal((await q.getTransaction(d, id))!.shared, R(200), 'shares untouched when not passed');
+
+    await q.updateTransaction(d, id, { ...base, shares: [{ person_id: sara, amount: R(300) }] });
+    assert.deepEqual(
+      (await q.listShares(d, id)).map((s) => [s.name, s.amount]),
+      [['Sara', R(300)]],
+    );
+    assert.equal((await q.listPeople(d)).find((p) => p.id === ali)!.balance, 0);
+
+    await assert.rejects(
+      q.updateTransaction(d, id, { ...base, shares: [{ person_id: ali, amount: R(700) }] }),
+      /more than the amount/,
+    );
+    assert.equal((await q.getTransaction(d, id))!.shared, R(300), 'a rejected edit changes nothing');
+
+    await q.updateTransaction(d, id, { ...base, shares: [] });
+    assert.equal((await q.getTransaction(d, id))!.shared, 0);
+
+    await q.updateTransaction(d, id, { ...base, shares: [{ person_id: ali, amount: R(100) }] });
+    await q.updateTransaction(d, id, { type: 'income', amount: R(600), date: '2026-09-12' });
+    assert.equal((await q.listDebtEntries(d, ali)).length, 0, 'an entry that is no longer an expense has no shares');
+  });
+
+  await test('totals: total paid counts everything entered, my spending leaves out friends’ shares', async () => {
+    const { d, c, cats, ali } = await sharedSetup();
+    await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(3000),
+      date: '2026-09-10',
+      account_id: cats['Others'],
+      shares: [{ person_id: ali, amount: R(1200) }],
+    });
+    await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(500),
+      date: '2026-09-11',
+      account_id: cats['Others'],
+    });
+    const t = await q.getCycleTotals(d, c.id);
+    assert.equal(t.totalPaid, R(3500));
+    assert.equal(t.totalSpent, R(2300));
+    assert.equal(t.sharedOut, R(1200));
+  });
+
+  await test('tags: create, tag many entries at once, totals per cycle, AND filter, delete, backup', async () => {
+    const { d, c, cats, ali } = await sharedSetup();
+    const base = { type: 'expense' as const, date: '2026-09-10', account_id: cats['Others'] };
+    const trip = await q.findOrCreateTag(d, 'Trip');
+    assert.equal(await q.findOrCreateTag(d, ' trip '), trip, 'names match regardless of case and spaces');
+    const food = await q.findOrCreateTag(d, 'Food');
+
+    const a = await q.addTransaction(d, c.id, {
+      ...base,
+      amount: R(3000),
+      tags: [trip],
+      shares: [{ person_id: ali, amount: R(1000) }],
+    });
+    const b = await q.addTransaction(d, c.id, { ...base, amount: R(500) });
+    const e = await q.addTransaction(d, c.id, { ...base, amount: R(200) });
+    await q.setTagOnTransactions(d, [b, e], trip, true);
+    await q.setTagOnTransactions(d, [b], food, true);
+
+    let totals = await q.getTagTotals(d, c.id);
+    assert.deepEqual(
+      totals.map((t) => [t.name, t.count, t.paid, t.mine]),
+      [
+        ['Trip', 3, R(3700), R(2700)],
+        ['Food', 1, R(500), R(500)],
+      ],
+    );
+
+    const all = await q.listAllTransactions(d);
+    const ctx = { today: '2026-09-30', currentCycleId: c.id, lastCycleId: null };
+    const both = applyFilters(all, { ...NO_FILTERS, tags: [trip, food] }, ctx);
+    assert.deepEqual(
+      both.map((t) => t.id),
+      [b],
+    );
+    assert.equal(activeFilterCount({ ...NO_FILTERS, tags: [trip] }), 1);
+    const onlyTrip = summarize(applyFilters(all, { ...NO_FILTERS, tags: [trip] }, ctx));
+    assert.deepEqual([onlyTrip.paid, onlyTrip.expenses], [R(3700), R(2700)]);
+    assert.deepEqual((await q.getTransaction(d, a))!.tag_names, 'Trip');
+
+    const backup = JSON.parse(JSON.stringify(await q.exportBackup(d)));
+    const d2 = makeDb();
+    await migrate(d2);
+    await q.restoreBackup(d2, backup);
+    assert.deepEqual(await q.getTagTotals(d2, c.id), totals, 'tags survive a backup and restore');
+
+    await q.setTagOnTransactions(d, [b, e], trip, false);
+    assert.equal((await q.getTransaction(d, b))!.tag_names, 'Food');
+    await q.updateTransaction(d, a, { ...base, amount: R(3000), tags: [] });
+    assert.equal((await q.getTransaction(d, a))!.tag_ids, null);
+    await q.setTagOnTransactions(d, [a], food, true);
+    await q.deleteTag(d, food);
+    totals = await q.getTagTotals(d, c.id);
+    assert.equal(totals.length, 0);
+    await q.deleteTransaction(d, e);
+    assert.equal((await q.listTags(d)).length, 1, 'deleting an entry keeps the tags');
+  });
+
+  await test('paying for friends: deleting the expense removes their debts; paying back settles them', async () => {
+    const { d, c, cats, ali } = await sharedSetup();
+    const id = await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(800),
+      date: '2026-09-13',
+      account_id: cats['Others'],
+      shares: [{ person_id: ali, amount: R(300) }],
+    });
+    await q.addDebtEntry(d, ali, 'got_back', R(300), '2026-09-14');
+    assert.equal((await q.getPerson(d, ali))!.balance, 0, 'settled once they pay back');
+    assert.equal((await q.getCycleTotals(d, c.id)).totalSpent, R(500), 'paying back does not change spending');
+
+    await q.deleteTransaction(d, id);
+    assert.equal((await q.listDebtEntries(d, ali)).filter((e) => e.kind === 'lent').length, 0);
+    assert.equal((await q.getPerson(d, ali))!.balance, -R(300), 'only their payment is left, so you owe it back');
+  });
+
+  await test('paying for friends: list totals, CSV columns and backup all use your share', async () => {
+    const { d, c, cats, ali } = await sharedSetup();
+    await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(2000),
+      date: '2026-09-15',
+      account_id: cats['Others'],
+      shares: [{ person_id: ali, amount: R(500) }],
+    });
+    const txs = await q.listAllTransactions(d);
+    assert.equal(summarize(txs).expenses, R(1500));
+    assert.equal(groupByDate(txs)[0].spent, R(1500));
+    assert.equal(
+      applyFilters(
+        txs,
+        { ...NO_FILTERS, query: 'ali' },
+        { today: '2026-09-22', currentCycleId: c.id, lastCycleId: null },
+      ).length,
+      1,
+    );
+
+    const backup = JSON.parse(JSON.stringify(await q.exportBackup(d)));
+    const d2 = makeDb();
+    await migrate(d2);
+    await q.restoreBackup(d2, backup);
+    const c2 = (await q.getActiveCycle(d2))!;
+    assert.equal((await q.getCycleTotals(d2, c2.id)).totalSpent, R(1500), 'shares survive a restore');
+    assert.equal((await q.getDebtTotals(d2)).owedToMe, R(500));
+
+    const old = JSON.parse(JSON.stringify(backup));
+    for (const row of old.debt_entries) delete row.tx_id;
+    const d3 = makeDb();
+    await migrate(d3);
+    await q.restoreBackup(d3, old);
+    assert.equal((await q.getDebtTotals(d3)).owedToMe, R(500), 'a backup without links still restores');
+  });
+
+  await test('upgrade v5 -> v6 keeps existing debts as plain entries', async () => {
+    const d = makeDb();
+    await migrate(d);
+    const ali = await q.findOrCreatePerson(d, 'Ali');
+    await q.addDebtEntry(d, ali, 'lent', R(100), '2026-09-01');
+    await d.execAsync('DROP INDEX idx_debt_tx; ALTER TABLE debt_entries DROP COLUMN tx_id; PRAGMA user_version = 5;');
+    await migrate(d);
+    const [e] = await q.listDebtEntries(d, ali);
+    assert.deepEqual([e.amount, e.tx_id], [R(100), null]);
+    assert.equal(((await d.getFirstAsync('PRAGMA user_version')) as any).user_version, SCHEMA_VERSION);
   });
 
   console.log(`\n${passed} passed`);

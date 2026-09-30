@@ -11,7 +11,7 @@ export const DEFAULT_CYCLE_START_DAY = 5;
  * The root layout uses it as the database provider's key, so when a new migration arrives through a live
  * code reload (which does not restart the app) the database is reopened and the upgrade actually runs.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 7;
 
 /** Spending categories, seeded on first launch. Only "Credit Card" counts as credit; the rest are debit. */
 const DEFAULT_ACCOUNTS: { name: string; kind: 'credit' | 'debit' }[] = [
@@ -237,6 +237,37 @@ export async function migrate(db: SQLiteDatabase) {
       `);
       await ensureQuickDefaults(db);
       await db.execAsync('PRAGMA user_version = 5');
+    });
+  }
+  if (version < 6) {
+    await db.withTransactionAsync(async () => {
+      // A friend's share of an expense you paid is an "I lent" entry linked to that expense.
+      const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(debt_entries)');
+      if (!cols.some((c) => c.name === 'tx_id')) {
+        await db.execAsync(
+          'ALTER TABLE debt_entries ADD COLUMN tx_id INTEGER REFERENCES transactions(id) ON DELETE CASCADE',
+        );
+      }
+      await db.execAsync('CREATE INDEX IF NOT EXISTS idx_debt_tx ON debt_entries(tx_id); PRAGMA user_version = 6;');
+    });
+  }
+  if (version < 7) {
+    await db.withTransactionAsync(async () => {
+      // Tags: your own labels (Trip, Office, ...) on any entries, to total them up separately.
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS tags (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          sort INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS tx_tags (
+          tx_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+          tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+          PRIMARY KEY (tx_id, tag_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_txtag_tag ON tx_tags(tag_id);
+        PRAGMA user_version = 7;
+      `);
     });
   }
 }

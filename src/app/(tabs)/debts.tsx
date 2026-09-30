@@ -5,7 +5,7 @@ import { StackBar } from '@/components/charts';
 import { ChevronIcon } from '@/components/icons';
 import { Avatar, Card, Empty, Header, Press, Reveal, Row, Screen, SectionTitle, Txt } from '@/components/ui';
 import { Spacing, type Palette } from '@/constants/theme';
-import { getDebtTotals, listPeople } from '@/db/queries';
+import { getActiveCycle, getCycleTotals, getDebtTotals, listPeople } from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
 import { useColors, useStyles } from '@/hooks/use-theme';
 import { balanceText, initials } from '@/lib/labels';
@@ -17,12 +17,17 @@ export default function DebtsScreen() {
   const router = useRouter();
 
   const { data } = useFocusLoad(async (db) => {
-    const [totals, people] = await Promise.all([getDebtTotals(db), listPeople(db)]);
-    return { totals, people };
+    const cycle = await getActiveCycle(db);
+    const [totals, people, cycleTotals] = await Promise.all([
+      getDebtTotals(db),
+      listPeople(db),
+      cycle ? getCycleTotals(db, cycle.id) : null,
+    ]);
+    return { totals, people, paidForFriends: cycleTotals?.sharedOut ?? 0 };
   });
 
   if (!data) return <Screen tabs>{null}</Screen>;
-  const { totals, people } = data;
+  const { totals, people, paidForFriends } = data;
 
   let i = 0;
   return (
@@ -56,6 +61,12 @@ export default function DebtsScreen() {
               { value: totals.iOwe, color: c.danger },
             ]}
           />
+          {paidForFriends > 0 ? (
+            <Row style={{ justifyContent: 'space-between' }}>
+              <Txt variant="dim">Paid for friends this cycle</Txt>
+              <Txt style={{ fontWeight: '600' }}>{formatPKR(paidForFriends)}</Txt>
+            </Row>
+          ) : null}
           <Row style={{ justifyContent: 'space-between' }}>
             <Txt variant="dim">Net</Txt>
             <Txt style={{ fontWeight: '700' }} color={totals.net < 0 ? c.danger : c.text}>

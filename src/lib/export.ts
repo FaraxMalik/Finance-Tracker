@@ -2,6 +2,7 @@ import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
 import type { Tx } from '@/db/queries';
+import { myShare } from '@/lib/ledger';
 import { fromPaisa } from '@/lib/money';
 import { TYPE_LABEL, txTitle } from '@/components/tx-row';
 
@@ -12,7 +13,19 @@ const escape = (v: string | number | null | undefined) => {
 
 /** One row per transaction, oldest first, ready for a spreadsheet. */
 export function transactionsToCsv(txs: Tx[]): string {
-  const header = ['Date', 'Type', 'Where / Source', 'Category', 'Bank', 'Amount (Rs)', 'Fee (Rs)', 'Note'];
+  const header = [
+    'Date',
+    'Type',
+    'Where / Source',
+    'Category',
+    'Bank',
+    'Amount (Rs)',
+    'Your share (Rs)',
+    'Shared with',
+    'Tags',
+    'Fee (Rs)',
+    'Note',
+  ];
   const rows = [...txs]
     .sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id)
     .map((t) => [
@@ -22,6 +35,9 @@ export function transactionsToCsv(txs: Tx[]): string {
       t.account_name,
       t.bank_name,
       fromPaisa(t.amount),
+      t.type === 'expense' && t.shared > 0 ? fromPaisa(myShare(t)) : '',
+      t.shared_with,
+      t.tag_names?.split(',').join('; ') ?? '',
       t.fee ? fromPaisa(t.fee) : '',
       t.note,
     ]);

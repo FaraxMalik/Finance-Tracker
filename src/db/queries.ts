@@ -58,7 +58,19 @@ export type Tx = {
   account_name: string | null;
   account_kind: AccountKind | null;
   bank_name: string | null;
+  /** Part of `amount` you paid on behalf of others; it sits in their debts, not in your spending. */
+  shared: number;
+  shared_with: string | null;
+  /** Comma-separated ids and names of this entry's tags (same order), or null. */
+  tag_ids: string | null;
+  tag_names: string | null;
 };
+
+export type Tag = { id: number; name: string; sort: number };
+
+/** One friend's part of an expense you paid. */
+export type Share = { person_id: number; amount: number };
+export type ShareRow = Share & { name: string };
 
 export type TxInput = {
   type: TxType;
@@ -72,6 +84,13 @@ export type TxInput = {
   place?: string | null;
   source?: string | null;
   note?: string | null;
+  /**
+   * Friends whose part of an expense you paid. Saved as "I lent" entries, so they owe you that much.
+   * Omit to leave the existing ones alone on an update; an empty list removes them.
+   */
+  shares?: Share[];
+  /** Tag ids. Omit to leave the existing tags alone on an update; an empty list removes them. */
+  tags?: number[];
 };
 
 /** Spending for one category (account) in a cycle. `id` is null for entries with no category. */
@@ -87,7 +106,12 @@ export type CycleTotals = {
   breakdown: CategoryTotal[];
   debitSpent: number;
   creditSpent: number;
+  /** Your own spending: everything you paid except what you paid on behalf of others. */
   totalSpent: number;
+  /** What you paid for others, which you expect to get back. */
+  sharedOut: number;
+  /** All the money that went out: your spending plus what you paid for others. */
+  totalPaid: number;
   income: number;
   cardPayments: number;
   swipeFees: number;
@@ -101,6 +125,8 @@ export type DebtEntry = {
   amount: number;
   date: string;
   note: string | null;
+  /** Set when the entry is a friend's share of an expense; the expense owns it. */
+  tx_id: number | null;
 };
 
 // ---------- Settings ----------
@@ -219,6 +245,54 @@ export async function archiveQuick(db: SQLiteDatabase, id: number) {
   await db.runAsync('UPDATE quick_expenses SET archived = 1 WHERE id = ?', id);
 }
 
+// ---------- Tags ----------
+
+export function listTags(db: SQLiteDatabase) {
+  return db.getAllAsync<Tag>('SELECT * FROM tags ORDER BY sort, id');
+}
+
+/** Returns the id of the tag with this name (any capitalisation), creating it if needed. */
+export async function findOrCreateTag(db: SQLiteDatabase, name: string): Promise<number> {
+  const trimmed = name.trim().replace(/,/g, ' ');
+  const existing = await db.getFirstAsync<{ id: number }>('SELECT id FROM tags WHERE name = ? COLLATE NOCASE', trimmed);
+  if (existing) return existing.id;
+  const row = await db.getFirstAsync<{ next: number }>('SELECT COALESCE(MAX(sort), -1) + 1 AS next FROM tags');
+  const res = await db.runAsync('INSERT INTO tags (name, sort) VALUES (?, ?)', trimmed, row?.next ?? 0);
+  return res.lastInsertRowId;
+}
+
+/** Removes the tag from every entry; the entries themselves stay. */
+export async function deleteTag(db: SQLiteDatabase, id: number) {
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM tx_tags WHERE tag_id = ?', id);
+    await db.runAsync('DELETE FROM tags WHERE id = ?', id);
+  });
+}
+
+/** Adds (`on`) or removes a tag on several entries at once. */
+export async function setTagOnTransactions(db: SQLiteDatabase, txIds: number[], tagId: number, on: boolean) {
+  await db.withTransactionAsync(async () => {
+    for (const txId of txIds) {
+      if (on) await db.runAsync('INSERT OR IGNORE INTO tx_tags (tx_id, tag_id) VALUES (?, ?)', txId, tagId);
+      else await db.runAsync('DELETE FROM tx_tags WHERE tx_id = ? AND tag_id = ?', txId, tagId);
+    }
+  });
+}
+
+export type TagTotal = { id: number; name: string; count: number; paid: number; mine: number };
+
+/** Expenses carrying each tag in a cycle: what you paid, and your own share of it. Tags with no expenses are left out. */
+export function getTagTotals(db: SQLiteDatabase, cycleId: number) {
+  return db.getAllAsync<TagTotal>(
+    `SELECT g.id, g.name, COUNT(*) AS count, SUM(t.amount) AS paid, SUM(${MINE_SQL('t')}) AS mine
+     FROM tags g
+     JOIN tx_tags tt ON tt.tag_id = g.id
+     JOIN transactions t ON t.id = tt.tx_id AND t.cycle_id = ? AND t.type = 'expense'
+     GROUP BY g.id ORDER BY g.sort, g.id`,
+    cycleId,
+  );
+}
+
 // ---------- Cycles ----------
 
 export function getActiveCycle(db: SQLiteDatabase) {
@@ -262,8 +336,21 @@ export async function listClosedCycles(db: SQLiteDatabase): Promise<ClosedCycle[
 
 // ---------- Transactions ----------
 
+/** What you paid on behalf of others for an expense (their shares are linked debt entries). */
+const SHARED_SQL = (t: string) => `COALESCE((SELECT SUM(d.amount) FROM debt_entries d WHERE d.tx_id = ${t}.id), 0)`;
+/** Your own part of an expense: everything except what you paid for others. */
+const MINE_SQL = (t: string) => `(${t}.amount - ${SHARED_SQL(t)})`;
+
 const TX_SELECT = `
-  SELECT t.*, a.name AS account_name, a.kind AS account_kind, b.name AS bank_name
+  SELECT t.*, a.name AS account_name, a.kind AS account_kind, b.name AS bank_name,
+    ${SHARED_SQL('t')} AS shared,
+    (SELECT GROUP_CONCAT(name, ', ') FROM
+      (SELECT p.name AS name FROM debt_entries d JOIN people p ON p.id = d.person_id
+       WHERE d.tx_id = t.id ORDER BY d.id)) AS shared_with,
+    (SELECT GROUP_CONCAT(tag_id) FROM (SELECT tt.tag_id FROM tx_tags tt WHERE tt.tx_id = t.id ORDER BY tt.tag_id)) AS tag_ids,
+    (SELECT GROUP_CONCAT(name, ', ') FROM
+      (SELECT g.name AS name FROM tx_tags tt JOIN tags g ON g.id = tt.tag_id
+       WHERE tt.tx_id = t.id ORDER BY tt.tag_id)) AS tag_names
   FROM transactions t
   LEFT JOIN accounts a ON a.id = t.account_id
   LEFT JOIN banks b ON b.id = t.bank_id`;
@@ -305,43 +392,97 @@ export function getTransaction(db: SQLiteDatabase, id: number) {
 
 const clean = (s?: string | null) => (s && s.trim() ? s.trim() : null);
 
-export async function addTransaction(db: SQLiteDatabase, cycleId: number, tx: TxInput) {
-  await db.runAsync(
-    `INSERT INTO transactions (cycle_id, type, amount, fee, date, account_id, bank_id, place, source, note, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    cycleId,
-    tx.type,
-    tx.amount,
-    tx.fee ?? 0,
-    tx.date,
-    tx.account_id ?? null,
-    tx.bank_id ?? null,
-    clean(tx.place),
-    clean(tx.source),
-    clean(tx.note),
-    new Date().toISOString(),
-  );
+/** Replaces the friends' shares of an expense; each becomes an "I lent" entry on the expense's date. */
+async function saveShares(db: SQLiteDatabase, txId: number, tx: TxInput) {
+  await db.runAsync('DELETE FROM debt_entries WHERE tx_id = ?', txId);
+  if (tx.type !== 'expense') return;
+  const shares = (tx.shares ?? []).filter((s) => s.amount > 0);
+  if (shares.reduce((sum, s) => sum + s.amount, 0) > tx.amount) {
+    throw new Error('The shares add up to more than the amount paid.');
+  }
+  const note = clean(tx.place) ?? 'Shared expense';
+  for (const s of shares) {
+    await db.runAsync(
+      `INSERT INTO debt_entries (person_id, kind, amount, date, note, created_at, tx_id)
+       VALUES (?, 'lent', ?, ?, ?, ?, ?)`,
+      s.person_id,
+      s.amount,
+      tx.date,
+      note,
+      new Date().toISOString(),
+      txId,
+    );
+  }
+}
+
+async function saveTags(db: SQLiteDatabase, txId: number, tagIds: number[]) {
+  await db.runAsync('DELETE FROM tx_tags WHERE tx_id = ?', txId);
+  for (const tagId of new Set(tagIds)) {
+    await db.runAsync('INSERT INTO tx_tags (tx_id, tag_id) VALUES (?, ?)', txId, tagId);
+  }
+}
+
+export async function addTransaction(db: SQLiteDatabase, cycleId: number, tx: TxInput): Promise<number> {
+  let id = 0;
+  await db.withTransactionAsync(async () => {
+    const res = await db.runAsync(
+      `INSERT INTO transactions (cycle_id, type, amount, fee, date, account_id, bank_id, place, source, note, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      cycleId,
+      tx.type,
+      tx.amount,
+      tx.fee ?? 0,
+      tx.date,
+      tx.account_id ?? null,
+      tx.bank_id ?? null,
+      clean(tx.place),
+      clean(tx.source),
+      clean(tx.note),
+      new Date().toISOString(),
+    );
+    id = res.lastInsertRowId;
+    if (tx.shares?.length) await saveShares(db, id, tx);
+    if (tx.tags?.length) await saveTags(db, id, tx.tags);
+  });
+  return id;
 }
 
 export async function updateTransaction(db: SQLiteDatabase, id: number, tx: TxInput) {
-  await db.runAsync(
-    `UPDATE transactions SET type = ?, amount = ?, fee = ?, date = ?, account_id = ?, bank_id = ?, place = ?, source = ?, note = ?
-     WHERE id = ?`,
-    tx.type,
-    tx.amount,
-    tx.fee ?? 0,
-    tx.date,
-    tx.account_id ?? null,
-    tx.bank_id ?? null,
-    clean(tx.place),
-    clean(tx.source),
-    clean(tx.note),
-    id,
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE transactions SET type = ?, amount = ?, fee = ?, date = ?, account_id = ?, bank_id = ?, place = ?, source = ?, note = ?
+       WHERE id = ?`,
+      tx.type,
+      tx.amount,
+      tx.fee ?? 0,
+      tx.date,
+      tx.account_id ?? null,
+      tx.bank_id ?? null,
+      clean(tx.place),
+      clean(tx.source),
+      clean(tx.note),
+      id,
+    );
+    if (tx.shares !== undefined || tx.type !== 'expense') await saveShares(db, id, tx);
+    if (tx.tags !== undefined) await saveTags(db, id, tx.tags);
+  });
+}
+
+/** The friends an expense was paid for, in the order they were added. */
+export function listShares(db: SQLiteDatabase, txId: number) {
+  return db.getAllAsync<ShareRow>(
+    `SELECT d.person_id, p.name, d.amount FROM debt_entries d JOIN people p ON p.id = d.person_id
+     WHERE d.tx_id = ? ORDER BY d.id`,
+    txId,
   );
 }
 
 export async function deleteTransaction(db: SQLiteDatabase, id: number) {
-  await db.runAsync('DELETE FROM transactions WHERE id = ?', id);
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM debt_entries WHERE tx_id = ?', id);
+    await db.runAsync('DELETE FROM tx_tags WHERE tx_id = ?', id);
+    await db.runAsync('DELETE FROM transactions WHERE id = ?', id);
+  });
 }
 
 /**
@@ -357,13 +498,15 @@ export async function getCycleTotals(db: SQLiteDatabase, cycleId: number): Promi
     fees: number;
     income: number;
     payments: number;
+    shared: number;
   }>(
     `SELECT
-       COALESCE(SUM(CASE WHEN t.type = 'expense' AND COALESCE(a.kind, 'debit') = 'debit' THEN t.amount END), 0) AS debit,
-       COALESCE(SUM(CASE WHEN t.type = 'expense' AND a.kind = 'credit' THEN t.amount END), 0) AS credit,
+       COALESCE(SUM(CASE WHEN t.type = 'expense' AND COALESCE(a.kind, 'debit') = 'debit' THEN ${MINE_SQL('t')} END), 0) AS debit,
+       COALESCE(SUM(CASE WHEN t.type = 'expense' AND a.kind = 'credit' THEN ${MINE_SQL('t')} END), 0) AS credit,
        COALESCE(SUM(CASE WHEN t.type IN ('card_swipe', 'card_withdrawal') THEN t.fee END), 0) AS fees,
        COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount END), 0) AS income,
-       COALESCE(SUM(CASE WHEN t.type = 'card_payment' THEN t.amount END), 0) AS payments
+       COALESCE(SUM(CASE WHEN t.type = 'card_payment' THEN t.amount END), 0) AS payments,
+       COALESCE(SUM(CASE WHEN t.type = 'expense' THEN ${SHARED_SQL('t')} END), 0) AS shared
      FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
      WHERE t.cycle_id = ?`,
     cycleId,
@@ -376,6 +519,8 @@ export async function getCycleTotals(db: SQLiteDatabase, cycleId: number): Promi
     debitSpent,
     creditSpent,
     totalSpent: debitSpent + creditSpent,
+    sharedOut: row?.shared ?? 0,
+    totalPaid: debitSpent + creditSpent + (row?.shared ?? 0),
     income: row?.income ?? 0,
     cardPayments: row?.payments ?? 0,
     swipeFees: row?.fees ?? 0,
@@ -385,7 +530,7 @@ export async function getCycleTotals(db: SQLiteDatabase, cycleId: number): Promi
 /** Expenses paid from each bank, largest first. */
 async function getBankTotals(db: SQLiteDatabase, cycleId: number): Promise<BankTotal[]> {
   return db.getAllAsync<BankTotal>(
-    `SELECT b.id, b.name, SUM(t.amount) AS total
+    `SELECT b.id, b.name, SUM(${MINE_SQL('t')}) AS total
      FROM transactions t JOIN banks b ON b.id = t.bank_id
      WHERE t.cycle_id = ? AND t.type = 'expense'
      GROUP BY b.id HAVING total > 0 ORDER BY total DESC, b.name`,
@@ -399,14 +544,14 @@ async function getBankTotals(db: SQLiteDatabase, cycleId: number): Promise<BankT
  */
 async function getBreakdown(db: SQLiteDatabase, cycleId: number, swipeFees: number): Promise<CategoryTotal[]> {
   const rows = await db.getAllAsync<CategoryTotal & { archived: number }>(
-    `SELECT a.id, a.name, a.kind, a.archived, COALESCE(SUM(t.amount), 0) AS total
+    `SELECT a.id, a.name, a.kind, a.archived, COALESCE(SUM(${MINE_SQL('t')}), 0) AS total
      FROM accounts a
      LEFT JOIN transactions t ON t.account_id = a.id AND t.cycle_id = ? AND t.type = 'expense'
      GROUP BY a.id ORDER BY a.sort, a.id`,
     cycleId,
   );
   const none = await db.getFirstAsync<{ total: number }>(
-    `SELECT COALESCE(SUM(amount), 0) AS total FROM transactions
+    `SELECT COALESCE(SUM(${MINE_SQL('transactions')}), 0) AS total FROM transactions
      WHERE cycle_id = ? AND type = 'expense' AND account_id IS NULL`,
     cycleId,
   );
@@ -427,7 +572,7 @@ async function getBreakdown(db: SQLiteDatabase, cycleId: number, swipeFees: numb
 /** Spending per day (expenses + swipe fees) for the bar chart. */
 export function getDailySpend(db: SQLiteDatabase, cycleId: number) {
   return db.getAllAsync<{ date: string; total: number }>(
-    `SELECT date, SUM(CASE WHEN type = 'expense' THEN amount WHEN type IN ('card_swipe', 'card_withdrawal') THEN fee ELSE 0 END) AS total
+    `SELECT date, SUM(CASE WHEN type = 'expense' THEN ${MINE_SQL('transactions')} WHEN type IN ('card_swipe', 'card_withdrawal') THEN fee ELSE 0 END) AS total
      FROM transactions WHERE cycle_id = ? GROUP BY date HAVING total > 0 ORDER BY date`,
     cycleId,
   );
@@ -520,7 +665,7 @@ export function getPerson(db: SQLiteDatabase, id: number) {
 
 export function listDebtEntries(db: SQLiteDatabase, personId: number) {
   return db.getAllAsync<DebtEntry>(
-    'SELECT id, person_id, kind, amount, date, note FROM debt_entries WHERE person_id = ? ORDER BY date DESC, id DESC',
+    'SELECT id, person_id, kind, amount, date, note, tx_id FROM debt_entries WHERE person_id = ? ORDER BY date DESC, id DESC',
     personId,
   );
 }
@@ -587,11 +732,14 @@ const BACKUP_TABLES = {
     'created_at',
   ],
   people: ['id', 'name'],
-  debt_entries: ['id', 'person_id', 'kind', 'amount', 'date', 'note', 'created_at'],
+  tags: ['id', 'name', 'sort'],
+  tx_tags: ['tx_id', 'tag_id'],
+  debt_entries: ['id', 'person_id', 'kind', 'amount', 'date', 'note', 'created_at', 'tx_id'],
 } as const;
 
 /** Delete children before parents, insert parents before children. */
 const RESTORE_ORDER = [
+  'tx_tags',
   'debt_entries',
   'transactions',
   'quick_expenses',
@@ -599,11 +747,12 @@ const RESTORE_ORDER = [
   'cycles',
   'accounts',
   'banks',
+  'tags',
   'settings',
 ] as const;
 
-/** Version 2 added banks, version 3 quick-adds. Older backups still restore. */
-export type Backup = { app: 'finance-tracker'; version: 1 | 2 | 3; exportedAt: string } & Record<
+/** Version 2 added banks, 3 quick-adds, 4 tags. Older backups still restore. */
+export type Backup = { app: 'finance-tracker'; version: 1 | 2 | 3 | 4; exportedAt: string } & Record<
   keyof typeof BACKUP_TABLES,
   Record<string, string | number | null>[]
 >;
@@ -615,16 +764,19 @@ export async function exportBackup(db: SQLiteDatabase): Promise<Backup> {
     const where = table === 'settings' ? " WHERE key NOT IN ('theme_mode', 'font_choice')" : '';
     data[table] = await db.getAllAsync(`SELECT * FROM ${table}${where}`);
   }
-  return { app: 'finance-tracker', version: 3, exportedAt: new Date().toISOString(), ...data } as Backup;
+  return { app: 'finance-tracker', version: 4, exportedAt: new Date().toISOString(), ...data } as Backup;
 }
 
 export async function restoreBackup(db: SQLiteDatabase, backup: unknown) {
   const b = backup as Partial<Backup>;
-  if (!b || b.app !== 'finance-tracker' || (b.version !== 1 && b.version !== 2 && b.version !== 3)) {
+  if (!b || b.app !== 'finance-tracker' || (b.version !== 1 && b.version !== 2 && b.version !== 3 && b.version !== 4)) {
     throw new Error('This is not a Finance Tracker backup file.');
   }
   for (const table of Object.keys(BACKUP_TABLES) as (keyof typeof BACKUP_TABLES)[]) {
-    const optional = (table === 'banks' && b.version === 1) || (table === 'quick_expenses' && b.version! < 3);
+    const optional =
+      (table === 'banks' && b.version === 1) ||
+      (table === 'quick_expenses' && b.version! < 3) ||
+      ((table === 'tags' || table === 'tx_tags') && b.version! < 4);
     if (!Array.isArray(b[table]) && !optional) throw new Error(`Backup is missing "${table}".`);
   }
 
