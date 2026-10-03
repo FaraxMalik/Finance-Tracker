@@ -54,3 +54,13 @@ export function relativeDate(iso: string): string {
   if (diff === 1) return 'Yesterday';
   return shortDate(iso);
 }
+
+/** "Today · 22 Sep", "Yesterday · 21 Sep", "Sat 19 Sep" (with the year when it isn't this year). */
+export function dayLabel(iso: string): string {
+  const today = todayISO();
+  const diff = diffDays(iso, today);
+  if (diff === 0) return `Today · ${shortDate(iso)}`;
+  if (diff === 1) return `Yesterday · ${shortDate(iso)}`;
+  const year = iso.slice(0, 4) === today.slice(0, 4) ? '' : ` ${iso.slice(0, 4)}`;
+  return `${weekdayShort(iso)} ${shortDate(iso)}${year}`;
+}

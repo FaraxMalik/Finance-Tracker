@@ -75,7 +75,7 @@ export default function HistoryScreen() {
           </Row>
           <Row>
             <Button
-              label="View table"
+              label="View list"
               variant="ghost"
               style={{ flex: 1 }}
               onPress={() => router.push(`/cycle/${cycle.id}`)}
@@ -95,7 +95,7 @@ export default function HistoryScreen() {
       {closed.length === 0 ? (
         <Reveal index={i++}>
           <Card>
-            <Empty>Closed cycles show up here, each with its full transaction table.</Empty>
+            <Empty>Closed cycles show up here, each as a searchable list of every entry, with debts and totals.</Empty>
           </Card>
         </Reveal>
       ) : (

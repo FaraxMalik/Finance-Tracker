@@ -1,52 +1,125 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Alert, Pressable, StyleSheet, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { Alert, StyleSheet, TextInput, View } from 'react-native';
 
 import { BankList } from '@/components/bank-list';
 import { CategoryList } from '@/components/category-list';
 import { ShareIcon } from '@/components/icons';
-import { txStyle, txTitle } from '@/components/tx-row';
-import { Button, Card, Divider, Empty, ModalHeader, Reveal, Row, Screen, SectionTitle, Txt } from '@/components/ui';
-import { Radius, Spacing, type Palette } from '@/constants/theme';
-import { useColors, useStyles } from '@/hooks/use-theme';
-import { getCycle, getCycleStartDay, getCycleTotals, listTransactions, type Tx } from '@/db/queries';
+import { TxRow } from '@/components/tx-row';
+import {
+  Button,
+  Card,
+  Chip,
+  ChipRow,
+  Divider,
+  Empty,
+  ModalHeader,
+  Reveal,
+  Row,
+  Screen,
+  SectionTitle,
+  Txt,
+} from '@/components/ui';
+import { Radius, Spacing, withAlpha, type Palette } from '@/constants/theme';
+import { useStyles, useTheme } from '@/hooks/use-theme';
+import {
+  getCycle,
+  getCycleStartDay,
+  getCycleTotals,
+  listDebtEntriesForCycle,
+  listTransactions,
+  type CycleDebtEntry,
+} from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
 import { cycleLabel, nominalEnd } from '@/lib/cycle';
-import { shortDate } from '@/lib/dates';
+import { dayLabel, longDate } from '@/lib/dates';
 import { shareTextFile, transactionsToCsv } from '@/lib/export';
-import { myShare } from '@/lib/ledger';
-import { formatPKR } from '@/lib/money';
+import { applyFilters, groupByDate, NO_FILTERS, summarize, summarizeDebts, type TypeFilter } from '@/lib/ledger';
+import { fromPaisa, formatPKR } from '@/lib/money';
 
+type View_ = TypeFilter | 'debts';
+
+const VIEWS: { value: View_; label: string }[] = [
+  { value: 'all', label: 'Everything' },
+  { value: 'expense', label: 'Expenses' },
+  { value: 'income', label: 'Income' },
+  { value: 'card', label: 'Card' },
+  { value: 'debts', label: 'Debts' },
+];
+
+const DEBT_WORD = { lent: 'Gave', got_back: 'Got back', borrowed: 'Borrowed', paid_back: 'Repaid' } as const;
+
+const matchesDebt = (d: CycleDebtEntry, query: string) => {
+  const q = query.trim().toLowerCase().replace(/,/g, '');
+  if (!q) return true;
+  const hay = [d.person_name, d.note, DEBT_WORD[d.kind], fromPaisa(d.amount)].filter(Boolean).join(' ').toLowerCase();
+  return q.split(/\s+/).every((w) => hay.includes(w));
+};
+
+/** One past (or the current) cycle as a searchable list: totals, debts, and every single entry. */
 export default function CycleReport() {
-  const c = useColors();
+  const { colors: c, fonts } = useTheme();
+  const styles = useStyles(makeStyles);
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const cycleId = Number(id);
+
+  const [query, setQuery] = useState('');
+  const [view, setView] = useState<View_>('all');
+  const [categories, setCategories] = useState<number[]>([]);
 
   const { data } = useFocusLoad(async (db) => {
     const cycle = await getCycle(db, cycleId);
     if (!cycle) return null;
     const startDay = await getCycleStartDay(db);
-    const [totals, txs] = await Promise.all([getCycleTotals(db, cycleId), listTransactions(db, cycleId)]);
-    return { cycle, startDay, totals, txs };
+    const [totals, txs, debts] = await Promise.all([
+      getCycleTotals(db, cycleId),
+      listTransactions(db, cycleId),
+      listDebtEntriesForCycle(db, cycle),
+    ]);
+    return { cycle, startDay, totals, txs, debts };
   });
 
+  const cycle = data?.cycle;
+  const txs = data?.txs;
+  const debts = data?.debts;
+
+  const rows = useMemo(() => {
+    if (!txs || view === 'debts') return [];
+    const type: TypeFilter = view;
+    return applyFilters(
+      txs,
+      { ...NO_FILTERS, type, query, categories },
+      { today: '', currentCycleId: null, lastCycleId: null },
+    );
+  }, [txs, view, query, categories]);
+  const debtRows = useMemo(
+    () => (debts && (view === 'all' || view === 'debts') ? debts.filter((d) => matchesDebt(d, query)) : []),
+    [debts, view, query],
+  );
+  const days = useMemo(() => groupByDate(rows), [rows]);
+
   if (data === null) return <Screen>{null}</Screen>;
-  if (!data.cycle)
+  if (!data || !cycle || !txs || !debts)
     return (
       <Screen>
-        <ModalHeader title="Not found" />
+        <ModalHeader title="Cycle" />
       </Screen>
     );
 
-  const { cycle, startDay, totals, txs } = data;
+  const { startDay, totals } = data;
   const isActive = cycle.closed_at === null;
   const end = cycle.end_date ?? nominalEnd(cycle.start_date, startDay);
   const label = cycleLabel(cycle.start_date, end);
-
-  const incoming = txs.filter((t) => t.type === 'income');
-  const spending = txs.filter((t) => t.type === 'expense');
-  const card = txs.filter((t) => t.type === 'card_payment' || t.type === 'card_swipe' || t.type === 'card_withdrawal');
-  const sum = (list: Tx[]) => list.reduce((s, t) => s + myShare(t), 0);
+  const sum = summarize(txs);
+  const debtSum = summarizeDebts(debts);
+  const shown = summarize(rows);
+  const filtering = query.trim() !== '' || categories.length > 0 || view !== 'all';
+  const usedCategories = [
+    ...new Map(
+      txs.filter((t) => t.type === 'expense').map((t) => [t.account_id ?? 0, t.account_name ?? 'Uncategorised']),
+    ).entries(),
+  ];
 
   const exportCsv = async () => {
     try {
@@ -56,7 +129,8 @@ export default function CycleReport() {
     }
   };
 
-  const open = (tx: Tx) => isActive && router.push({ pathname: '/add', params: { id: String(tx.id) } });
+  const toggleCategory = (cid: number) =>
+    setCategories((list) => (list.includes(cid) ? list.filter((x) => x !== cid) : [...list, cid]));
 
   return (
     <Screen>
@@ -66,16 +140,72 @@ export default function CycleReport() {
       />
 
       <Reveal index={0}>
-        <View style={{ gap: 6, paddingVertical: Spacing.two }}>
-          <Txt variant="label">Total spent</Txt>
-          <Txt variant="hero" numberOfLines={1} adjustsFontSizeToFit>
-            {formatPKR(totals.totalSpent)}
-          </Txt>
-        </View>
+        <Card style={{ gap: Spacing.three }}>
+          <Row style={{ gap: 0, alignItems: 'flex-start' }}>
+            <View style={{ flex: 1, gap: 4 }}>
+              <Txt variant="label">Total paid</Txt>
+              <Txt variant="heading" numberOfLines={1} adjustsFontSizeToFit>
+                {formatPKR(sum.paid)}
+              </Txt>
+            </View>
+            <View style={styles.vline} />
+            <View style={{ flex: 1, gap: 4 }}>
+              <Txt variant="label">My spending</Txt>
+              <Txt variant="heading" numberOfLines={1} adjustsFontSizeToFit>
+                {formatPKR(totals.totalSpent)}
+              </Txt>
+            </View>
+          </Row>
+          <Divider />
+          <Row style={{ justifyContent: 'space-between' }}>
+            <Txt variant="dim">Income</Txt>
+            <Txt style={{ fontWeight: '600' }} color={c.income}>
+              {formatPKR(totals.income)}
+            </Txt>
+          </Row>
+          <Row style={{ justifyContent: 'space-between' }}>
+            <Txt variant="dim">Left after spending</Txt>
+            <Txt style={{ fontWeight: '600' }} color={totals.income - totals.totalSpent < 0 ? c.danger : c.text}>
+              {formatPKR(totals.income - totals.totalSpent, { sign: true })}
+            </Txt>
+          </Row>
+        </Card>
       </Reveal>
 
       <Reveal index={1}>
-        <Card>
+        <SectionTitle>Debts this cycle</SectionTitle>
+        <Card style={{ gap: Spacing.three, marginTop: Spacing.two }}>
+          <Row style={{ gap: Spacing.three }}>
+            <Figure label="Gave" value={debtSum.gave} />
+            <Figure label="Got back" value={debtSum.gotBack} color={c.income} />
+          </Row>
+          <Row style={{ gap: Spacing.three }}>
+            <Figure label="Borrowed" value={debtSum.borrowed} />
+            <Figure label="Repaid" value={debtSum.paidBack} color={c.income} />
+          </Row>
+          {!isActive && cycle.snap_card_owed !== null ? (
+            <>
+              <Divider />
+              <Row style={{ justifyContent: 'space-between' }}>
+                <Txt variant="dim">Card owed at close</Txt>
+                <Txt style={{ fontWeight: '600' }}>{formatPKR(cycle.snap_card_owed)}</Txt>
+              </Row>
+              <Row style={{ justifyContent: 'space-between' }}>
+                <Txt variant="dim">Owed to me at close</Txt>
+                <Txt style={{ fontWeight: '600' }}>{formatPKR(cycle.snap_owed_to_me ?? 0)}</Txt>
+              </Row>
+              <Row style={{ justifyContent: 'space-between' }}>
+                <Txt variant="dim">I owed at close</Txt>
+                <Txt style={{ fontWeight: '600' }}>{formatPKR(cycle.snap_i_owe ?? 0)}</Txt>
+              </Row>
+            </>
+          ) : null}
+        </Card>
+      </Reveal>
+
+      <Reveal index={2}>
+        <SectionTitle>Where it went</SectionTitle>
+        <Card style={{ marginTop: Spacing.two }}>
           <CategoryList breakdown={totals.breakdown} total={totals.totalSpent} />
         </Card>
       </Reveal>
@@ -89,155 +219,136 @@ export default function CycleReport() {
         </>
       ) : null}
 
-      <Card style={{ gap: Spacing.three }}>
-        <Row style={{ justifyContent: 'space-between' }}>
-          <Txt variant="dim">Income</Txt>
-          <Txt style={{ fontWeight: '600' }} color={c.income}>
-            {formatPKR(totals.income)}
+      <SectionTitle>{`All entries · ${txs.length + debts.length}`}</SectionTitle>
+      <View style={styles.search}>
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search place, note, person, bank, amount"
+          placeholderTextColor={withAlpha(c.textDim, 0.6)}
+          selectionColor={c.text}
+          autoCorrect={false}
+          style={[styles.searchInput, { fontFamily: fonts.regular }]}
+        />
+        {query ? (
+          <Txt variant="dim" style={{ fontWeight: '600' }} onPress={() => setQuery('')}>
+            Clear
           </Txt>
-        </Row>
-        <Divider />
-        <Row style={{ justifyContent: 'space-between' }}>
-          <Txt variant="dim">Left after spending</Txt>
-          <Txt style={{ fontWeight: '600' }} color={totals.income - totals.totalSpent < 0 ? c.danger : c.text}>
-            {formatPKR(totals.income - totals.totalSpent, { sign: true })}
-          </Txt>
-        </Row>
-        {!isActive && cycle.snap_card_owed !== null ? (
-          <>
-            <Divider />
-            <Row style={{ justifyContent: 'space-between' }}>
-              <Txt variant="dim">Card owed at close</Txt>
-              <Txt style={{ fontWeight: '600' }}>{formatPKR(cycle.snap_card_owed)}</Txt>
-            </Row>
-            <Row style={{ justifyContent: 'space-between' }}>
-              <Txt variant="dim">Owed to me at close</Txt>
-              <Txt style={{ fontWeight: '600' }}>{formatPKR(cycle.snap_owed_to_me ?? 0)}</Txt>
-            </Row>
-            <Row style={{ justifyContent: 'space-between' }}>
-              <Txt variant="dim">I owed at close</Txt>
-              <Txt style={{ fontWeight: '600' }}>{formatPKR(cycle.snap_i_owe ?? 0)}</Txt>
-            </Row>
-          </>
         ) : null}
-      </Card>
+      </View>
+      <ChipRow>
+        {VIEWS.map((v) => (
+          <Chip key={v.value} label={v.label} selected={view === v.value} onPress={() => setView(v.value)} />
+        ))}
+      </ChipRow>
+      {usedCategories.length > 1 && view !== 'debts' ? (
+        <ChipRow>
+          {usedCategories.map(([cid, name]) => (
+            <Chip key={cid} label={name} selected={categories.includes(cid)} onPress={() => toggleCategory(cid)} />
+          ))}
+        </ChipRow>
+      ) : null}
 
-      <Table title="Incoming" rows={incoming} total={sum(incoming)} onRow={open} empty="No income recorded." />
-      <Table title="Spending" rows={spending} total={sum(spending)} onRow={open} empty="No spending recorded." />
-      <Table title="Card activity" rows={card} onRow={open} empty="No card payments, swipes or withdrawals." />
+      {filtering && view !== 'debts' ? (
+        <Row style={{ justifyContent: 'space-between' }}>
+          <Txt variant="small">
+            {shown.count} {shown.count === 1 ? 'entry' : 'entries'} match
+          </Txt>
+          <Txt variant="small" style={{ fontWeight: '600' }} color={c.text}>
+            Paid {formatPKR(shown.paid)}
+            {shown.expenses !== shown.paid ? ` · Mine ${formatPKR(shown.expenses)}` : ''}
+          </Txt>
+        </Row>
+      ) : null}
+
+      {days.map((g) => (
+        <View key={g.date}>
+          <View style={styles.dayHeader}>
+            <Txt variant="label">{dayLabel(g.date)}</Txt>
+            {g.spent > 0 ? <Txt variant="small">-{formatPKR(g.spent)}</Txt> : null}
+          </View>
+          {g.data.map((tx, n) => (
+            <TxRow
+              key={tx.id}
+              tx={tx}
+              showDate={false}
+              last={n === g.data.length - 1}
+              onPress={isActive ? () => router.push({ pathname: '/add', params: { id: String(tx.id) } }) : undefined}
+            />
+          ))}
+        </View>
+      ))}
+
+      {debtRows.length > 0 ? (
+        <View>
+          <View style={styles.dayHeader}>
+            <Txt variant="label">Debts</Txt>
+          </View>
+          {debtRows.map((d, n) => (
+            <Row key={d.id} style={[styles.debtRow, n < debtRows.length - 1 && styles.rowLine]}>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Txt numberOfLines={1} style={{ fontWeight: '600' }}>
+                  {d.person_name}
+                </Txt>
+                <Txt variant="small" numberOfLines={1}>
+                  {DEBT_WORD[d.kind]}
+                  {d.note ? ` · ${d.note}` : ''} · {longDate(d.date)}
+                </Txt>
+              </View>
+              <Txt
+                style={{ fontWeight: '600' }}
+                color={d.kind === 'got_back' || d.kind === 'paid_back' ? c.income : c.text}>
+                {formatPKR(d.amount)}
+              </Txt>
+            </Row>
+          ))}
+        </View>
+      ) : null}
+
+      {rows.length === 0 && debtRows.length === 0 ? (
+        <Empty>{filtering ? 'Nothing matches.' : 'No entries in this cycle.'}</Empty>
+      ) : null}
 
       <Button label="Export as CSV" variant="ghost" onPress={exportCsv} icon={<ShareIcon color={c.text} size={18} />} />
     </Screen>
   );
 }
 
-function Table({
-  title,
-  rows,
-  total,
-  onRow,
-  empty,
-}: {
-  title: string;
-  rows: Tx[];
-  total?: number;
-  onRow: (tx: Tx) => void;
-  empty: string;
-}) {
-  const c = useColors();
-  const styles = useStyles(makeStyles);
+function Figure({ label, value, color }: { label: string; value: number; color?: string }) {
   return (
-    <>
-      <SectionTitle
-        right={
-          total !== undefined && rows.length > 0 ? (
-            <Txt variant="dim" style={{ fontWeight: '600' }}>
-              {formatPKR(total)}
-            </Txt>
-          ) : null
-        }>
-        {title}
-      </SectionTitle>
-      <View style={styles.table}>
-        {rows.length === 0 ? (
-          <Empty>{empty}</Empty>
-        ) : (
-          <>
-            <View style={[styles.tr, styles.thead]}>
-              <Txt variant="small" style={styles.cDate}>
-                Date
-              </Txt>
-              <Txt variant="small" style={styles.cWhat}>
-                Detail
-              </Txt>
-              <Txt variant="small" style={styles.cAcc}>
-                Category / bank
-              </Txt>
-              <Txt variant="small" style={styles.cAmt}>
-                Amount
-              </Txt>
-            </View>
-            {rows.map((tx, i) => {
-              const { color, sign } = txStyle(tx, c);
-              const detail =
-                (tx.type === 'card_swipe' || tx.type === 'card_withdrawal') && tx.fee > 0
-                  ? `${tx.type === 'card_swipe' ? 'Swipe' : 'Withdrawal'} · fee ${formatPKR(tx.fee)}`
-                  : txTitle(tx);
-              return (
-                <Pressable
-                  key={tx.id}
-                  onPress={() => onRow(tx)}
-                  style={[styles.tr, i < rows.length - 1 && styles.rowLine]}>
-                  <Txt variant="dim" style={styles.cDate}>
-                    {shortDate(tx.date)}
-                  </Txt>
-                  <Txt style={[styles.cWhat, { fontSize: 14 }]} numberOfLines={2}>
-                    {detail}
-                  </Txt>
-                  <View style={styles.cAcc}>
-                    <Txt variant="dim" style={{ fontSize: 12 }} numberOfLines={1}>
-                      {tx.type === 'expense' ? (tx.account_name ?? 'Uncategorised') : (tx.bank_name ?? '—')}
-                    </Txt>
-                    {tx.type === 'expense' && tx.bank_name ? (
-                      <Txt variant="small" numberOfLines={1}>
-                        {tx.bank_name}
-                      </Txt>
-                    ) : null}
-                  </View>
-                  <Txt style={[styles.cAmt, { color, fontWeight: '600', fontSize: 13 }]} numberOfLines={1}>
-                    {sign}
-                    {formatPKR(tx.amount).replace('Rs ', '')}
-                  </Txt>
-                </Pressable>
-              );
-            })}
-          </>
-        )}
-      </View>
-    </>
+    <View style={{ flex: 1, gap: 2 }}>
+      <Txt variant="small">{label}</Txt>
+      <Txt style={{ fontWeight: '700' }} color={color} numberOfLines={1} adjustsFontSizeToFit>
+        {formatPKR(value)}
+      </Txt>
+    </View>
   );
 }
 
 const makeStyles = (c: Palette) =>
   StyleSheet.create({
-    table: {
-      backgroundColor: c.surface,
-      borderRadius: Radius.lg,
-      borderWidth: 1,
-      borderColor: c.border,
-      overflow: 'hidden',
-    },
-    tr: {
+    vline: { width: 1, alignSelf: 'stretch', backgroundColor: c.border, marginHorizontal: Spacing.three },
+    search: {
       flexDirection: 'row',
       alignItems: 'center',
-      paddingVertical: 11,
-      paddingHorizontal: Spacing.three - 2,
-      gap: 6,
+      gap: Spacing.two,
+      minHeight: 44,
+      paddingHorizontal: Spacing.three,
+      borderRadius: Radius.pill,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: c.surface,
     },
-    thead: { backgroundColor: c.bg, borderBottomWidth: 1, borderBottomColor: c.border },
+    searchInput: { flex: 1, minWidth: 0, color: c.text, fontSize: 14, paddingVertical: 8 },
+    dayHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingTop: Spacing.three,
+      paddingBottom: Spacing.one,
+      borderBottomWidth: 1,
+      borderBottomColor: c.border,
+    },
+    debtRow: { paddingVertical: Spacing.three - 4, gap: Spacing.three - 4 },
     rowLine: { borderBottomWidth: 1, borderBottomColor: c.border },
-    cDate: { width: 54 },
-    cWhat: { flex: 1 },
-    cAcc: { width: 88 },
-    cAmt: { width: 72, textAlign: 'right' },
   });

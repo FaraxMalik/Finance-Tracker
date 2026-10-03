@@ -688,6 +688,28 @@ export function listDebtEntries(db: SQLiteDatabase, personId: number) {
   );
 }
 
+export type CycleDebtEntry = DebtEntry & { person_name: string };
+
+/**
+ * Debt entries that belong to a cycle. A friend's share of an expense belongs to the cycle of that expense;
+ * a plain entry belongs to the cycle whose dates it falls in (a closed cycle ends where the next one starts).
+ */
+export function listDebtEntriesForCycle(db: SQLiteDatabase, cycle: Cycle) {
+  return db.getAllAsync<CycleDebtEntry>(
+    `SELECT d.id, d.person_id, d.kind, d.amount, d.date, d.note, d.tx_id, p.name AS person_name
+     FROM debt_entries d
+     JOIN people p ON p.id = d.person_id
+     LEFT JOIN transactions t ON t.id = d.tx_id
+     WHERE (d.tx_id IS NOT NULL AND t.cycle_id = ?)
+        OR (d.tx_id IS NULL AND d.date >= ? AND (? IS NULL OR d.date < ?))
+     ORDER BY d.date DESC, d.id DESC`,
+    cycle.id,
+    cycle.start_date,
+    cycle.end_date,
+    cycle.end_date,
+  );
+}
+
 export async function findOrCreatePerson(db: SQLiteDatabase, name: string): Promise<number> {
   const trimmed = name.trim();
   const existing = await db.getFirstAsync<{ id: number }>(

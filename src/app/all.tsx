@@ -19,7 +19,7 @@ import {
 } from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
 import { useStyles, useTheme } from '@/hooks/use-theme';
-import { diffDays, shortDate, todayISO, weekdayShort } from '@/lib/dates';
+import { dayLabel, todayISO } from '@/lib/dates';
 import {
   activeFilterCount,
   applyFilters,
@@ -47,15 +47,6 @@ const SORTS: { value: Sort; label: string }[] = [
   { value: 'oldest', label: 'Oldest' },
   { value: 'largest', label: 'Largest' },
 ];
-
-/** "Today · 22 Sep", "Yesterday · 21 Sep", "Sat 19 Sep" (with the year when it isn't this year). */
-function dayLabel(iso: string): string {
-  const diff = diffDays(iso, todayISO());
-  if (diff === 0) return `Today · ${shortDate(iso)}`;
-  if (diff === 1) return `Yesterday · ${shortDate(iso)}`;
-  const year = iso.slice(0, 4) === todayISO().slice(0, 4) ? '' : ` ${iso.slice(0, 4)}`;
-  return `${weekdayShort(iso)} ${shortDate(iso)}${year}`;
-}
 
 type Section = { key: string; date: string | null; spent: number; data: Tx[] };
 

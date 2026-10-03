@@ -20,6 +20,7 @@ import {
   NONE,
   NO_FILTERS,
   summarize,
+  summarizeDebts,
   type Filters,
 } from '@/lib/ledger';
 import { currentCycleStart, nextBoundary, nominalEnd, cycleProgress } from '@/lib/cycle';
@@ -966,6 +967,61 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.equal((await q.getTransaction(d, swipe))!.shared, R(3000), 'shares kept when not passed');
     await q.updateTransaction(d, swipe, { type: 'card_swipe', amount: R(10000), date: '2026-09-11', shares: [] });
     assert.equal((await q.getTransaction(d, swipe))!.shared, 0);
+  });
+
+  await test('cycle list: debts belong to the cycle of their expense or their date; totals add up', async () => {
+    const { d, c, ali, cats } = await sharedSetup();
+    const tx = await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(900),
+      date: '2026-09-10',
+      account_id: cats['Others'],
+      shares: [{ person_id: ali, amount: R(300) }],
+    });
+    await q.addDebtEntry(d, ali, 'got_back', R(100), '2026-09-12');
+    await q.addDebtEntry(d, ali, 'borrowed', R(50), '2026-09-13');
+    const first = (await q.getCycle(d, c.id))!;
+    const inFirst = await q.listDebtEntriesForCycle(d, first);
+    assert.equal(inFirst.length, 3);
+    assert.ok(inFirst.some((e) => e.tx_id === tx && e.person_name === 'Ali'));
+    assert.deepEqual(summarizeDebts(inFirst), { gave: R(300), gotBack: R(100), borrowed: R(50), paidBack: 0 });
+
+    await q.startNewCycle(d);
+    const second = (await q.getActiveCycle(d))!;
+    await q.addDebtEntry(d, ali, 'paid_back', R(20), second.start_date);
+    const closed = (await q.getCycle(d, c.id))!;
+    assert.equal((await q.listDebtEntriesForCycle(d, closed)).length, 3, 'old cycle keeps its own');
+    const now = await q.listDebtEntriesForCycle(d, second);
+    assert.ok(
+      now.every((e) => e.kind === 'paid_back'),
+      'the new cycle starts empty of old debts',
+    );
+  });
+
+  await test('backup round trip keeps cycle lists, debts and stays small', async () => {
+    const { d, c, ali, cats } = await sharedSetup();
+    for (let i = 0; i < 3000; i++) {
+      await q.addTransaction(d, c.id, {
+        type: 'expense',
+        amount: R(100 + (i % 50)),
+        date: '2026-09-10',
+        account_id: cats['Others'],
+        place: 'Grocery store',
+        note: i % 10 === 0 ? 'weekly shop' : null,
+        shares: i % 20 === 0 ? [{ person_id: ali, amount: R(30) }] : undefined,
+      });
+    }
+    await q.addDebtEntry(d, ali, 'got_back', R(100), '2026-09-12');
+    await q.startNewCycle(d);
+    const before = (await q.listDebtEntriesForCycle(d, (await q.getCycle(d, c.id))!)).length;
+    const json = JSON.stringify(await q.exportBackup(d));
+    assert.ok(json.length < 1_000_000, `3000 entries should be well under 1 MB, got ${json.length} bytes`);
+
+    const { d: d2 } = await sharedSetup();
+    await q.restoreBackup(d2, JSON.parse(json));
+    const oldCycle = (await q.listCycles(d2)).find((x) => x.closed_at)!;
+    assert.equal((await q.listTransactions(d2, oldCycle.id)).length, 3000);
+    assert.equal((await q.listDebtEntriesForCycle(d2, oldCycle)).length, before);
   });
 
   await test('people: they_owe and i_owe are separate sides of the balance', async () => {

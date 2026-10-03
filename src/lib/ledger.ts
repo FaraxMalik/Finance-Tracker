@@ -118,6 +118,20 @@ export function summarize(txs: Tx[]) {
   return { count: txs.length, expenses, paid, income };
 }
 
+export type DebtLike = { kind: 'lent' | 'borrowed' | 'got_back' | 'paid_back'; amount: number };
+
+/** What happened with debts in a period: money you gave out, got back, borrowed and paid back. */
+export function summarizeDebts(entries: DebtLike[]) {
+  const t = { gave: 0, gotBack: 0, borrowed: 0, paidBack: 0 };
+  for (const e of entries) {
+    if (e.kind === 'lent') t.gave += e.amount;
+    else if (e.kind === 'got_back') t.gotBack += e.amount;
+    else if (e.kind === 'borrowed') t.borrowed += e.amount;
+    else t.paidBack += e.amount;
+  }
+  return t;
+}
+
 export type DayGroup = { date: string; data: Tx[]; spent: number };
 
 /** Consecutive entries on the same date, keeping the given order. */
