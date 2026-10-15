@@ -4,7 +4,7 @@ import * as Sharing from 'expo-sharing';
 import type { Tx } from '@/db/queries';
 import { myShare } from '@/lib/ledger';
 import { fromPaisa } from '@/lib/money';
-import { TYPE_LABEL, txTitle } from '@/components/tx-row';
+import { cardPurchaseLabel, TYPE_LABEL, txTitle } from '@/components/tx-row';
 
 const escape = (v: string | number | null | undefined) => {
   const s = v === null || v === undefined ? '' : String(v);
@@ -23,14 +23,13 @@ export function transactionsToCsv(txs: Tx[]): string {
     'Your share (Rs)',
     'Shared with',
     'Tags',
-    'Fee (Rs)',
     'Note',
   ];
   const rows = [...txs]
     .sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id)
     .map((t) => [
       t.date,
-      TYPE_LABEL[t.type],
+      cardPurchaseLabel(t) ? `Card ${cardPurchaseLabel(t)}` : TYPE_LABEL[t.type],
       t.type === 'expense' || t.type === 'income' ? (txTitle(t) === TYPE_LABEL[t.type] ? '' : txTitle(t)) : '',
       t.account_name,
       t.bank_name,
@@ -38,7 +37,6 @@ export function transactionsToCsv(txs: Tx[]): string {
       t.type === 'expense' && t.shared > 0 ? fromPaisa(myShare(t)) : '',
       t.shared_with,
       t.tag_names?.split(',').join('; ') ?? '',
-      t.fee ? fromPaisa(t.fee) : '',
       t.note,
     ]);
   return [header, ...rows].map((r) => r.map(escape).join(',')).join('\n');

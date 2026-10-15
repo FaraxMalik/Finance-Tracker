@@ -113,13 +113,16 @@ export default function HistoryScreen() {
                   <ChevronIcon color={c.textDim} size={18} />
                 </Row>
                 <StackBar
-                  segments={past.breakdown.map((b) => ({ value: b.total, color: categoryColor(b.name, b.kind, c) }))}
+                  segments={past.breakdown.map((b) => ({
+                    value: b.total,
+                    color: categoryColor(b.name, b.kind, c, b.card_cash),
+                  }))}
                 />
                 <Row style={{ gap: Spacing.two, alignItems: 'flex-start' }}>
                   {past.breakdown.slice(0, 3).map((b) => (
                     <View key={b.id ?? 'none'} style={{ flex: 1, gap: 2 }}>
                       <Row style={{ gap: 6 }}>
-                        <Dot color={categoryColor(b.name, b.kind, c)} size={7} />
+                        <Dot color={categoryColor(b.name, b.kind, c, b.card_cash)} size={7} />
                         <Txt variant="small" numberOfLines={1} style={{ flex: 1 }}>
                           {b.name}
                         </Txt>

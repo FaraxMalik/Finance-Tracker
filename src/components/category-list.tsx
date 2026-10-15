@@ -16,11 +16,13 @@ export function CategoryList({ breakdown, total }: { breakdown: CategoryTotal[];
   }
   return (
     <View style={{ gap: Spacing.three }}>
-      <StackBar segments={breakdown.map((b) => ({ value: b.total, color: categoryColor(b.name, b.kind, c) }))} />
+      <StackBar
+        segments={breakdown.map((b) => ({ value: b.total, color: categoryColor(b.name, b.kind, c, b.card_cash) }))}
+      />
       <View style={{ gap: Spacing.three - 4 }}>
         {breakdown.map((b) => (
           <Row key={b.id ?? 'none'} style={{ gap: Spacing.two + 2 }}>
-            <Dot color={categoryColor(b.name, b.kind, c)} />
+            <Dot color={categoryColor(b.name, b.kind, c, b.card_cash)} />
             <Txt style={{ flex: 1 }} numberOfLines={1}>
               {b.name}
             </Txt>

@@ -8,6 +8,7 @@ import { Spacing } from '@/constants/theme';
 import {
   addQuick,
   archiveQuick,
+  chargedToCard,
   getQuick,
   listAccounts,
   listBanks,
@@ -51,7 +52,7 @@ export default function QuickEditScreen() {
 
   const category = categories.find((x) => x.id === categoryId) ?? null;
   // A credit-card expense is not paid from a bank.
-  const onCard = category?.kind === 'credit';
+  const onCard = chargedToCard(category);
   const bank = onCard ? null : (banks.find((b) => b.id === bankId) ?? null);
 
   const save = async () => {
@@ -112,7 +113,7 @@ export default function QuickEditScreen() {
             <Chip
               key={x.id}
               label={x.name}
-              dot={categoryColor(x.name, x.kind, c)}
+              dot={categoryColor(x.name, x.kind, c, x.card_cash)}
               selected={category?.id === x.id}
               onPress={() => setCategoryId(category?.id === x.id ? null : x.id)}
             />

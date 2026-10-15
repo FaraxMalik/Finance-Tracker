@@ -1,4 +1,4 @@
-import type { Palette } from '@/constants/theme';
+import { withAlpha, type Palette } from '@/constants/theme';
 import type { DebtKind } from '@/db/queries';
 
 export const DEBT_LABEL: Record<DebtKind, string> = {
@@ -27,9 +27,18 @@ export function initials(name: string): string {
   return ((parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
 }
 
-/** Colour for a category: fixed for the three built-ins, a stable muted tone for ones the user adds. */
-export function categoryColor(name: string, kind: 'credit' | 'debit', colors: Palette): string {
+/**
+ * Colour for a category: fixed for the built-ins, a stable muted tone for ones the user adds.
+ * Credit → Debit (`cardCash`) is a lighter shade of the card's colour: credit money, spent from a bank.
+ */
+export function categoryColor(
+  name: string,
+  kind: 'credit' | 'debit',
+  colors: Palette,
+  cardCash?: number | null,
+): string {
   const key = name.trim().toLowerCase();
+  if (cardCash) return withAlpha(colors.catCredit, 0.5);
   if (key === 'credit card' || kind === 'credit') return colors.catCredit;
   if (key === 'salary') return colors.catSalary;
   if (key === 'others' || key === 'uncategorised') return colors.catOthers;

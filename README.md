@@ -26,9 +26,10 @@ _Shown with demo data._
   spending and income totals; the card balance and debts carry over.
 - **Category and bank are separate**: an expense has a _category_ (what kind of spending) and a _bank_ (which
   account it was paid from): NayaPay, Meezan Bank, Cash, Faysal Bank, SadaPay. Both lists are editable.
-- **Credit card screen** (card entries have no bank): what you owe, the limit and what is available, with three ways the card is used, each with
-  its own total: **Online** (a purchase), **Swipe** (card to bank) and **Withdrawal** (card to cash), plus
-  **Payments**.
+- **Credit card screen** (card entries have no bank): what you owe, the limit and what is available, with three ways
+  the card is used, each with its own total: **POS** (a purchase on a shop's machine), **Online** (a purchase online)
+  and **Credit → Debit** (money moved off the card into your bank), plus **Payments** and what you spent under the
+  Credit → Debit category.
 - **Places**: under "Where did you spend" the Add screen shows your saved places (Food and Fuel to start). Tap one
   and it fills in the place with its usual category and bank. Type a new place and tap **Save as place** to keep it;
   manage them in Settings.
@@ -36,7 +37,7 @@ _Shown with demo data._
   (an entry matches if it has any of the ones you picked), plus type, period, search and sort. A summary shows the
   count, total paid and your share for whatever is on screen. Select many entries to move them to a category or
   tag them together and see their sum.
-- **Paid for friends**: on any expense (and on a card swipe or withdrawal), pick the friends you paid for and split it equally, all on them, or with
+- **Paid for friends**: on any expense, pick the friends you paid for and split it equally, all on them, or with
   custom amounts. Their shares go straight into their balance under Debts; only your own share counts as your
   spending.
 - **Two main totals**: **Total paid** (everything you entered) and **My spending** (leaves out what you paid for
@@ -47,17 +48,22 @@ _Shown with demo data._
 - **Debts**: switch between **They owe me** and **I owe them** to list people and amounts, with a history per person
   for each side.
 - **Monthly reports** as tables, exportable as CSV, and **backup / restore** to a JSON file.
-- **Light, dark or system theme** and three typefaces (Mono, Serif, Classic), all in Settings.
+- **Light, dark or system theme** and four typefaces (DM Sans, Mono, Serif, Classic), all in Settings.
 
 ## How money is counted
 
-- **Category** (expenses only): Credit Card, Salary or Others. Untagged entries show as _Uncategorised_.
-  Credit Card is credit spending; every other category is debit.
-- **Income** (Salary / Project / Other) is tracked separately and is never spending.
-- **Card swipe** and **withdrawal** raise what you owe on the card, but only their **fee** counts as spending (under
-  Credit Card). A **card payment** lowers what you owe and is a transfer, not spending.
-- **Online** is not a separate type: it is an expense filed under the Credit Card category, so an expense entered on
-  Home with that category also appears on the Credit screen.
+- **Category** (expenses only): Credit Card, Salary, Others or Credit → Debit. Untagged entries show as
+  _Uncategorised_. Credit Card and Credit → Debit are credit spending; every other category is debit.
+- **Income** (Salary / Project / Other) is tracked separately and is never spending. Home's income card has two
+  tabs: **Without credit** (income only) and **With credit** (income + this cycle's Credit → Debit), and Left over
+  follows the tab. Card money is never counted as income anywhere else.
+- **POS** and **Online** are card purchases: expenses filed under the Credit Card category (an expense entered on Home
+  with that category also appears on the Credit screen). They add to what you owe and are spending.
+- **Credit → Debit** moves money off the card into your bank. It adds to what you owe but is **not** spending, and it
+  stays off Home and the entry lists (it shows on the Credit screen, and under the Card filter). Spend that money as a
+  normal expense under the **Credit → Debit** category: it counts as credit spending and does not add to what you
+  owe a second time.
+- A **card payment** lowers what you owe and is a transfer, not spending. Fees are not tracked.
 - **Paying for friends**: the expense keeps the full amount that left your bank or card (so balances stay right), and
   each friend's share is saved as an "I lent" entry linked to it. Spending, category, bank and daily totals count
   only your share. When they pay you back, record it on their page; that never changes your spending.

@@ -106,6 +106,7 @@ export async function seedDemo(db: SQLiteDatabase) {
     type: 'expense',
     amount: R(23900),
     account_id: accounts['Credit Card'],
+    channel: 'pos',
     place: 'Phone repair',
     date: day(8),
   });
@@ -117,8 +118,23 @@ export async function seedDemo(db: SQLiteDatabase) {
     place: 'Electricity bill',
     date: day(9),
   });
-  await add({ type: 'card_swipe', amount: R(40000), fee: R(1200), bank_id: bank['Meezan Bank'], date: day(10) });
-  await add({ type: 'card_withdrawal', amount: R(15000), fee: R(450), bank_id: bank['Cash'], date: day(11) });
+  await add({ type: 'card_swipe', amount: R(40000), date: day(10) });
+  await add({
+    type: 'expense',
+    amount: R(18000),
+    account_id: accounts['Credit → Debit'],
+    bank_id: bank['Meezan Bank'],
+    place: 'Groceries',
+    date: day(10),
+  });
+  await add({
+    type: 'expense',
+    amount: R(12500),
+    account_id: accounts['Credit → Debit'],
+    bank_id: bank['Cash'],
+    place: 'Car service',
+    date: day(11),
+  });
   await add({
     type: 'expense',
     amount: R(2750),

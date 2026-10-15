@@ -2,7 +2,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { Dot, Press, Txt } from '@/components/ui';
 import { Spacing, type Palette } from '@/constants/theme';
-import type { Tx } from '@/db/queries';
+import { chargedToCard, type Tx } from '@/db/queries';
 import { useColors, useStyles } from '@/hooks/use-theme';
 import { relativeDate } from '@/lib/dates';
 import { categoryColor } from '@/lib/labels';
@@ -12,9 +12,14 @@ export const TYPE_LABEL: Record<Tx['type'], string> = {
   expense: 'Expense',
   income: 'Income',
   card_payment: 'Card payment',
-  card_swipe: 'Card swipe',
-  card_withdrawal: 'Card withdrawal',
+  card_swipe: 'Credit → Debit',
 };
+
+/** A purchase charged to the card: "POS" (at a shop's machine) or "Online". Null for anything else. */
+export function cardPurchaseLabel(tx: Tx): 'POS' | 'Online' | null {
+  if (tx.type !== 'expense' || !chargedToCard({ kind: tx.account_kind, card_cash: tx.account_card_cash })) return null;
+  return tx.channel === 'pos' ? 'POS' : 'Online';
+}
 
 /** Colour and sign for a transaction's amount: only income is coloured, everything else is plain. */
 export function txStyle(tx: Tx, c: Palette): { color: string; sign: '+' | '-' | '' } {
@@ -39,6 +44,8 @@ function txSubtitle(tx: Tx, withDate = true): string {
   const parts: string[] = [];
   if (tx.type === 'expense') {
     parts.push(tx.account_name ?? 'Uncategorised');
+    const purchase = cardPurchaseLabel(tx);
+    if (purchase) parts.push(purchase);
     if (tx.bank_name) parts.push(tx.bank_name);
     if (tx.tag_names)
       parts.push(
@@ -50,9 +57,7 @@ function txSubtitle(tx: Tx, withDate = true): string {
   } else if (tx.type === 'card_payment') {
     parts.push(tx.bank_name ? `from ${tx.bank_name}` : 'bill payment');
   } else if (tx.type === 'card_swipe') {
-    parts.push(tx.bank_name ? `to ${tx.bank_name}` : 'to bank');
-  } else if (tx.type === 'card_withdrawal') {
-    parts.push(tx.bank_name ? `to ${tx.bank_name}` : 'cash');
+    parts.push(tx.bank_name ? `to ${tx.bank_name}` : 'card to bank');
   } else if (tx.bank_name) {
     parts.push(`to ${tx.bank_name}`);
   }
@@ -62,7 +67,7 @@ function txSubtitle(tx: Tx, withDate = true): string {
 }
 
 /**
- * `cardView` is the Credit screen: a purchase made with the card reads as "Online" there,
+ * `cardView` is the Credit screen: a purchase made with the card reads as "POS" or "Online" there,
  * wherever it was entered.
  */
 export function TxRow({
@@ -88,11 +93,16 @@ export function TxRow({
   const styles = useStyles(makeStyles);
   const { color, sign } = txStyle(tx, c);
   const dot =
-    tx.type === 'expense' && tx.account_name ? categoryColor(tx.account_name, tx.account_kind ?? 'debit', c) : null;
-  const hasFee = (tx.type === 'card_swipe' || tx.type === 'card_withdrawal') && tx.fee > 0;
-  const online = cardView && tx.type === 'expense';
-  const title = online ? tx.place || 'Online purchase' : txTitle(tx);
-  const subtitle = online ? (showDate ? `Online · ${relativeDate(tx.date)}` : 'Online') : txSubtitle(tx, showDate);
+    tx.type === 'expense' && tx.account_name
+      ? categoryColor(tx.account_name, tx.account_kind ?? 'debit', c, tx.account_card_cash)
+      : null;
+  const purchase = cardView ? cardPurchaseLabel(tx) : null;
+  const title = purchase ? tx.place || `${purchase} purchase` : txTitle(tx);
+  const subtitle = purchase
+    ? showDate
+      ? `${purchase} · ${relativeDate(tx.date)}`
+      : purchase
+    : txSubtitle(tx, showDate);
 
   return (
     <Press
@@ -127,11 +137,6 @@ export function TxRow({
         {tx.type === 'expense' && tx.shared > 0 ? (
           <Txt variant="small" numberOfLines={1}>
             yours {formatPKR(tx.amount - tx.shared)}
-          </Txt>
-        ) : null}
-        {hasFee ? (
-          <Txt variant="small" color={c.warn}>
-            fee {formatPKR(tx.fee)}
           </Txt>
         ) : null}
       </View>

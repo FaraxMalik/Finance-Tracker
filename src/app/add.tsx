@@ -8,6 +8,7 @@ import { Button, Card, Chip, ChipRow, Divider, Field, ModalHeader, Press, Row, S
 import { Radius, Spacing, withAlpha, type Palette } from '@/constants/theme';
 import {
   addQuick,
+  chargedToCard,
   addTransaction,
   deleteTransaction,
   findOrCreatePerson,
@@ -25,6 +26,7 @@ import {
   updateTransaction,
   type Account,
   type Bank,
+  type Channel,
   type Person,
   type QuickExpense,
   type Share,
@@ -47,27 +49,27 @@ const SPLIT_MODES: { mode: SplitMode; label: string }[] = [
   { mode: 'custom', label: 'Custom' },
 ];
 
-type TypeOption = { type: TxType; label: string; save: string };
+type TypeOption = { key: string; type: TxType; channel?: Channel; label: string; save: string };
 
 /** Home's + adds an expense or income. */
 const DAILY_TYPES: TypeOption[] = [
-  { type: 'expense', label: 'Expense', save: 'Save expense' },
-  { type: 'income', label: 'Income', save: 'Save income' },
+  { key: 'expense', type: 'expense', label: 'Expense', save: 'Save expense' },
+  { key: 'income', type: 'income', label: 'Income', save: 'Save income' },
 ];
 
 /**
- * The Credit screen's + adds only these. "Online" is a purchase made with the card: an expense filed under
- * the Credit Card category, so it also shows up in Home's totals and needs no bank.
+ * The Credit screen's + adds only these. POS and Online are purchases made with the card: expenses filed under
+ * the Credit Card category, so they also show up in Home's totals and need no bank.
  */
 const CARD_TYPES: TypeOption[] = [
-  { type: 'expense', label: 'Online', save: 'Save online purchase' },
-  { type: 'card_swipe', label: 'Swipe', save: 'Save swipe' },
-  { type: 'card_withdrawal', label: 'Withdrawal', save: 'Save withdrawal' },
-  { type: 'card_payment', label: 'Payment', save: 'Save payment' },
+  { key: 'pos', type: 'expense', channel: 'pos', label: 'POS', save: 'Save POS purchase' },
+  { key: 'online', type: 'expense', channel: null, label: 'Online', save: 'Save online purchase' },
+  { key: 'card_swipe', type: 'card_swipe', label: 'Credit → Debit', save: 'Save Credit → Debit' },
+  { key: 'card_payment', type: 'card_payment', label: 'Payment', save: 'Save payment' },
 ];
 
 /** Entry types that only exist on the card (an "expense" can be either kind, so it is not listed). */
-const isCardOnlyType = (t?: string): boolean => t === 'card_swipe' || t === 'card_withdrawal' || t === 'card_payment';
+const isCardOnlyType = (t?: string): boolean => t === 'card_swipe' || t === 'card_payment';
 
 const INCOME_SOURCES = ['Salary', 'Project', 'Other'];
 
@@ -77,18 +79,18 @@ const BANK_LABEL: Record<TxType, string> = {
   income: 'Received in',
   card_payment: 'Paid from',
   card_swipe: 'Money received in',
-  card_withdrawal: 'Cash received in',
 };
 
-const ONLINE_HINT =
-  'A purchase made with the card, usually online. It adds to what you owe and counts under Credit Card spending. No bank needed.';
+const PURCHASE_HINT = {
+  pos: 'Paid with the card on a shop’s machine. It adds to what you owe and counts under Credit Card spending. No bank needed.',
+  online:
+    'Paid with the card online, e.g. Foodpanda. It adds to what you owe and counts under Credit Card spending. No bank needed.',
+};
 
 const HINT: Partial<Record<TxType, string>> = {
   card_payment: 'Paying your card bill. This lowers what you owe and is not counted as spending.',
   card_swipe:
-    'Swiping the card on the machine to get money in your bank. It adds to what you owe on the card; only the fee counts as spending.',
-  card_withdrawal:
-    'Withdrawing cash from an ATM with the card. It adds to what you owe on the card; only the fee counts as spending.',
+    'Moving money off the card into your bank. It adds to what you owe but is not spending. When you spend that money, file it under the Credit → Debit category.',
 };
 
 export default function AddScreen() {
@@ -96,7 +98,7 @@ export default function AddScreen() {
   const styles = useStyles(makeStyles);
   const db = useSQLiteContext();
   const router = useRouter();
-  const params = useLocalSearchParams<{ id?: string; type?: string; scope?: string }>();
+  const params = useLocalSearchParams<{ id?: string; type?: string; scope?: string; channel?: string }>();
   const editingId = params.id ? Number(params.id) : null;
 
   const [cardScope, setCardScope] = useState(params.scope === 'card' || isCardOnlyType(params.type));
@@ -104,8 +106,8 @@ export default function AddScreen() {
   const [type, setType] = useState<TxType>(
     options.some((o) => o.type === params.type) ? (params.type as TxType) : options[0].type,
   );
+  const [channel, setChannel] = useState<Channel>(params.channel === 'pos' ? 'pos' : null);
   const [amount, setAmount] = useState('');
-  const [fee, setFee] = useState('');
   const [date, setDate] = useState(todayISO());
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [bankId, setBankId] = useState<number | null>(null);
@@ -118,6 +120,8 @@ export default function AddScreen() {
   const [newName, setNewName] = useState('');
   const [splitMode, setSplitMode] = useState<SplitMode>('equal');
   const [customBy, setCustomBy] = useState<Record<string, string>>({});
+  /** A Credit → Debit move saved with friends' shares back when that was allowed; editing keeps them. */
+  const [oldShares, setOldShares] = useState(false);
 
   const [allTags, setAllTags] = useState<Tag[]>([]);
   const [tagIds, setTagIds] = useState<number[]>([]);
@@ -145,10 +149,13 @@ export default function AddScreen() {
         if (!tx) return router.back();
         setLocked(tx.cycle_id !== cycle?.id);
         // A purchase on the credit card is edited as "Online", the way the Credit screen shows it.
-        setCardScope(isCardOnlyType(tx.type) || (tx.type === 'expense' && tx.account_kind === 'credit'));
+        setCardScope(
+          isCardOnlyType(tx.type) ||
+            (tx.type === 'expense' && chargedToCard({ kind: tx.account_kind, card_cash: tx.account_card_cash })),
+        );
         setType(tx.type);
+        setChannel(tx.channel);
         setAmount(fromPaisa(tx.amount));
-        setFee(tx.fee ? fromPaisa(tx.fee) : '');
         setDate(tx.date);
         setCategoryId(tx.account_id);
         setBankId(tx.bank_id);
@@ -161,6 +168,7 @@ export default function AddScreen() {
           setWho(shares.map((x) => ({ key: `p${x.person_id}`, name: x.name, personId: x.person_id })));
           setSplitMode('custom');
           setCustomBy(Object.fromEntries(shares.map((x) => [`p${x.person_id}`, fromPaisa(x.amount)])));
+          setOldShares(tx.type === 'card_swipe');
         }
       } else if (params.scope !== 'card' && (!params.type || params.type === 'expense')) {
         // New expenses start from the last category and bank you used.
@@ -172,14 +180,16 @@ export default function AddScreen() {
     })();
   }, [db, editingId, router, params.type, params.scope]);
 
-  const selectType = (next: TxType) => {
+  const selectType = (o: TypeOption) => {
     if (locked) return;
-    setType(next);
+    setType(o.type);
+    setChannel(o.channel ?? null);
   };
 
-  // "Online" (an expense from the Credit screen) is always the credit card category.
+  // POS and Online (an expense from the Credit screen) always use the credit card category.
   const cardOnline = cardScope && type === 'expense';
-  const creditCategory = categories.find((x) => x.kind === 'credit' && !x.archived) ?? null;
+  const creditCategory = categories.find((x) => chargedToCard(x) && !x.archived) ?? null;
+  const selectedKey = cardOnline ? (channel === 'pos' ? 'pos' : 'online') : type;
 
   // Otherwise only expenses have a category. A hidden (removed) one still shows if this entry uses it.
   const categoryChoices =
@@ -187,11 +197,10 @@ export default function AddScreen() {
   const category = cardOnline ? creditCategory : (categoryChoices.find((x) => x.id === categoryId) ?? null);
 
   // Anything on the credit card has no bank: the card bill is paid later, as a card payment.
-  const onCard = cardScope || (type === 'expense' && category?.kind === 'credit');
+  const onCard = cardScope || (type === 'expense' && chargedToCard(category));
   const bankChoices = banks.filter((b) => !b.archived || b.id === bankId);
   const bank = onCard ? null : (bankChoices.find((b) => b.id === bankId) ?? null);
-  const canShare = type === 'expense' || type === 'card_swipe' || type === 'card_withdrawal';
-  const hasFee = type === 'card_swipe' || type === 'card_withdrawal';
+  const canShare = type === 'expense' || (type === 'card_swipe' && oldShares);
 
   const totalPaisa = toPaisa(amount);
   const customPaisa = who.map((x) => toPaisa(customBy[x.key] ?? ''));
@@ -266,8 +275,6 @@ export default function AddScreen() {
     if (amountPaisa <= 0) return setError('Enter an amount greater than zero.');
     if (cardOnline && !creditCategory)
       return setError('Mark one category as Credit in Settings first, so card purchases have a home.');
-    const feePaisa = hasFee ? toPaisa(fee) : 0;
-    if (feePaisa > amountPaisa) return setError('The fee cannot be bigger than the amount.');
     if (canShare && overShared) return setError('The friends’ shares add up to more than you paid.');
     if (!cycleId) return;
 
@@ -284,7 +291,7 @@ export default function AddScreen() {
       tags: type === 'expense' ? tagIds : [],
       type,
       amount: amountPaisa,
-      fee: feePaisa,
+      channel: type === 'expense' && onCard ? channel : null,
       date,
       account_id: category?.id ?? null,
       bank_id: bank?.id ?? null,
@@ -315,7 +322,7 @@ export default function AddScreen() {
       },
     ]);
 
-  const saveLabel = options.find((o) => o.type === type)?.save ?? 'Save entry';
+  const saveLabel = options.find((o) => o.key === selectedKey)?.save ?? 'Save entry';
 
   const footer = locked ? null : (
     <View style={{ gap: Spacing.two }}>
@@ -340,12 +347,13 @@ export default function AddScreen() {
 
       <View style={styles.segments}>
         {options.map((o) => {
-          const selected = type === o.type;
+          const selected = selectedKey === o.key;
           return (
             <Press
-              key={o.type}
-              onPress={() => selectType(o.type)}
-              style={[styles.segment, selected && styles.segmentOn]}>
+              key={o.key}
+              onPress={() => selectType(o)}
+              // Credit → Debit is the one long label; give it the room it needs.
+              style={[styles.segment, o.key === 'card_swipe' && { flex: 1.7 }, selected && styles.segmentOn]}>
               <Txt
                 numberOfLines={1}
                 adjustsFontSizeToFit
@@ -391,23 +399,11 @@ export default function AddScreen() {
             {error}
           </Txt>
         ) : cardOnline ? (
-          <Txt variant="small">{ONLINE_HINT}</Txt>
+          <Txt variant="small">{PURCHASE_HINT[channel === 'pos' ? 'pos' : 'online']}</Txt>
         ) : HINT[type] ? (
           <Txt variant="small">{HINT[type]}</Txt>
         ) : null}
       </View>
-
-      {hasFee ? (
-        <Field
-          label="Fee charged"
-          optional
-          value={fee}
-          onChangeText={setFee}
-          editable={!locked}
-          placeholder="0"
-          keyboardType="decimal-pad"
-        />
-      ) : null}
 
       {type === 'expense' ? (
         <View style={{ gap: Spacing.two + 2 }}>
@@ -480,20 +476,32 @@ export default function AddScreen() {
               <Chip
                 key={x.id}
                 label={x.name}
-                dot={categoryColor(x.name, x.kind, c)}
+                dot={categoryColor(x.name, x.kind, c, x.card_cash)}
                 selected={category?.id === x.id}
                 onPress={() => !locked && setCategoryId(category?.id === x.id ? null : x.id)}
               />
             ))}
           </ChipRow>
+          {category?.card_cash ? (
+            <Txt variant="small">
+              Money you moved off the card. It counts as credit spending but does not add to what you owe again.
+            </Txt>
+          ) : null}
         </View>
       ) : null}
 
       {onCard && !cardScope ? (
-        <Txt variant="small">
-          Charged to your credit card, so it also appears on the Credit screen as Online and adds to what you owe. No
-          bank needed.
-        </Txt>
+        <View style={{ gap: Spacing.two + 2 }}>
+          <Txt variant="label">How did you pay</Txt>
+          <ChipRow>
+            <Chip label="POS" selected={channel === 'pos'} onPress={() => !locked && setChannel('pos')} />
+            <Chip label="Online" selected={channel !== 'pos'} onPress={() => !locked && setChannel(null)} />
+          </ChipRow>
+          <Txt variant="small">
+            Charged to your credit card, so it also appears on the Credit screen and adds to what you owe. No bank
+            needed.
+          </Txt>
+        </View>
       ) : onCard ? null : bankChoices.length > 0 ? (
         <View style={{ gap: Spacing.two + 2 }}>
           <Txt variant="label">

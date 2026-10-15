@@ -1,4 +1,6 @@
 import { useRouter } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import { useState } from 'react';
 import { View } from 'react-native';
 
 import { Bars, ProgressBar, type Bar } from '@/components/charts';
@@ -9,6 +11,7 @@ import { TxRow } from '@/components/tx-row';
 import {
   Button,
   Card,
+  Chip,
   Divider,
   Empty,
   Header,
@@ -27,8 +30,10 @@ import {
   getCycleStartDay,
   getCycleTotals,
   getDailySpend,
+  getSetting,
   getTagTotals,
-  listTransactions,
+  listRecentTransactions,
+  setSetting,
 } from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
 import { cycleLabel, cycleProgress, nominalEnd } from '@/lib/cycle';
@@ -38,22 +43,26 @@ import { formatPKR } from '@/lib/money';
 export default function Dashboard() {
   const c = useColors();
   const router = useRouter();
+  const db = useSQLiteContext();
+  /** Income on its own, or with the money moved off the card this cycle added (remembered between visits). */
+  const [withCredit, setWithCredit] = useState<boolean | null>(null);
 
   const { data } = useFocusLoad(async (db) => {
     const cycle = (await getActiveCycle(db))!;
     const startDay = await getCycleStartDay(db);
-    const [totals, daily, recent, tags] = await Promise.all([
+    const [totals, daily, recent, tags, incomeView] = await Promise.all([
       getCycleTotals(db, cycle.id),
       getDailySpend(db, cycle.id),
-      listTransactions(db, cycle.id, 5),
+      listRecentTransactions(db, cycle.id, 5),
       getTagTotals(db, cycle.id),
+      getSetting(db, 'income_view'),
     ]);
-    return { cycle, startDay, totals, daily, recent, tags };
+    return { cycle, startDay, totals, daily, recent, tags, incomeView };
   });
 
   if (!data) return <Screen tabs>{null}</Screen>;
 
-  const { cycle, startDay, totals, daily, recent, tags } = data;
+  const { cycle, startDay, totals, daily, recent, tags, incomeView } = data;
   const end = nominalEnd(cycle.start_date, startDay);
   const progress = cycleProgress(cycle.start_date, startDay);
   const today = todayISO();
@@ -73,7 +82,13 @@ export default function Dashboard() {
 
   // Whole rupees: paisa-level precision is noise in a daily average.
   const avgPerDay = Math.round(totals.totalSpent / Math.max(progress.dayNumber, 1) / 100) * 100;
-  const left = totals.income - totals.totalSpent;
+  const showCredit = withCredit ?? incomeView === 'with_credit';
+  const incomeShown = totals.income + (showCredit ? totals.creditToDebit : 0);
+  const left = incomeShown - totals.totalSpent;
+  const pickIncomeView = (on: boolean) => {
+    setWithCredit(on);
+    setSetting(db, 'income_view', on ? 'with_credit' : 'without_credit');
+  };
 
   let i = 0;
   return (
@@ -184,20 +199,32 @@ export default function Dashboard() {
       ) : null}
 
       <Reveal index={i++}>
-        <Card style={{ flexDirection: 'row', gap: 0, paddingVertical: Spacing.three }}>
-          <View style={{ flex: 1, gap: 4 }}>
-            <Txt variant="label">Income</Txt>
-            <Txt variant="heading" color={c.income} numberOfLines={1} adjustsFontSizeToFit>
-              {formatPKR(totals.income)}
-            </Txt>
+        <Card style={{ gap: Spacing.three, paddingVertical: Spacing.three }}>
+          <Row>
+            <Chip label="Without credit" selected={!showCredit} onPress={() => pickIncomeView(false)} />
+            <Chip label="With credit" selected={showCredit} onPress={() => pickIncomeView(true)} />
+          </Row>
+          <View style={{ flexDirection: 'row' }}>
+            <View style={{ flex: 1, gap: 4 }}>
+              <Txt variant="label">{showCredit ? 'Income + credit' : 'Income'}</Txt>
+              <Txt variant="heading" color={c.income} numberOfLines={1} adjustsFontSizeToFit>
+                {formatPKR(incomeShown)}
+              </Txt>
+            </View>
+            <View style={{ width: 1, backgroundColor: c.border, marginHorizontal: Spacing.three }} />
+            <View style={{ flex: 1, gap: 4 }}>
+              <Txt variant="label">Left over</Txt>
+              <Txt variant="heading" color={left < 0 ? c.danger : c.text} numberOfLines={1} adjustsFontSizeToFit>
+                {formatPKR(left, { sign: true })}
+              </Txt>
+            </View>
           </View>
-          <View style={{ width: 1, backgroundColor: c.border, marginHorizontal: Spacing.three }} />
-          <View style={{ flex: 1, gap: 4 }}>
-            <Txt variant="label">Left over</Txt>
-            <Txt variant="heading" color={left < 0 ? c.danger : c.text} numberOfLines={1} adjustsFontSizeToFit>
-              {formatPKR(left, { sign: true })}
+          {showCredit ? (
+            <Txt variant="small">
+              Income {formatPKR(totals.income)} + Credit → Debit {formatPKR(totals.creditToDebit)} this cycle. The card
+              money still has to be paid back.
             </Txt>
-          </View>
+          ) : null}
         </Card>
       </Reveal>
 

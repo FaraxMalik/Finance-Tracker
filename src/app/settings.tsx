@@ -12,6 +12,7 @@ import {
   addBank,
   archiveAccount,
   archiveBank,
+  chargedToCard,
   deleteTag,
   exportBackup,
   getCycleStartDay,
@@ -296,7 +297,10 @@ export default function SettingsScreen() {
             <View style={{ flex: 1, gap: 2 }}>
               <Txt style={{ fontWeight: '600' }}>{q.name}</Txt>
               <Txt variant="small">
-                {[q.account_name ?? 'Uncategorised', q.account_kind === 'credit' ? null : q.bank_name]
+                {[
+                  q.account_name ?? 'Uncategorised',
+                  chargedToCard({ kind: q.account_kind, card_cash: q.account_card_cash }) ? null : q.bank_name,
+                ]
                   .filter(Boolean)
                   .join(' · ')}
               </Txt>
@@ -385,16 +389,23 @@ function AccountRow({
         style={[styles.input, { fontFamily: fonts.regular }]}
       />
       <Row>
-        <Chip
-          label="Debit"
-          selected={account.kind === 'debit'}
-          onPress={() => onChange(name.trim() || account.name, 'debit')}
-        />
-        <Chip
-          label="Credit"
-          selected={account.kind === 'credit'}
-          onPress={() => onChange(name.trim() || account.name, 'credit')}
-        />
+        {account.card_cash ? (
+          // Always credit: it is how money moved off the card gets spent.
+          <Txt variant="small">Money moved off the card</Txt>
+        ) : (
+          <>
+            <Chip
+              label="Debit"
+              selected={account.kind === 'debit'}
+              onPress={() => onChange(name.trim() || account.name, 'debit')}
+            />
+            <Chip
+              label="Credit"
+              selected={account.kind === 'credit'}
+              onPress={() => onChange(name.trim() || account.name, 'credit')}
+            />
+          </>
+        )}
         <View style={{ flex: 1 }} />
         <Txt variant="dim" color={c.danger} onPress={onRemove}>
           Remove

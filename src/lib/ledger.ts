@@ -1,4 +1,4 @@
-import type { Tx } from '@/db/queries';
+import { chargedToCard, type Tx } from '@/db/queries';
 import { addDays } from '@/lib/dates';
 import { fromPaisa } from '@/lib/money';
 
@@ -50,7 +50,11 @@ export function activeFilterCount(f: Filters): number {
 /** What an entry costs you: an expense minus the part you paid on behalf of friends. */
 export const myShare = (t: Tx): number => (t.type === 'expense' ? t.amount - t.shared : t.amount);
 
-const isCardEntry = (t: Tx) => t.type === 'card_payment' || t.type === 'card_swipe' || t.type === 'card_withdrawal';
+/** Anything on the credit card: POS and online purchases, Credit → Debit moves and bill payments. */
+const isCardEntry = (t: Tx) =>
+  t.type === 'card_payment' ||
+  t.type === 'card_swipe' ||
+  (t.type === 'expense' && chargedToCard({ kind: t.account_kind, card_cash: t.account_card_cash }));
 
 export type FilterContext = {
   today: string;
@@ -75,6 +79,8 @@ export function applyFilters(txs: Tx[], f: Filters, ctx: FilterContext): Tx[] {
   const from30 = addDays(ctx.today, -29);
 
   const rows = txs.filter((t) => {
+    // A Credit → Debit move is not spending, so it only shows when looking at the card.
+    if (t.type === 'card_swipe' && f.type !== 'card') return false;
     if (f.type === 'expense' && t.type !== 'expense') return false;
     if (f.type === 'income' && t.type !== 'income') return false;
     if (f.type === 'card' && !isCardEntry(t)) return false;

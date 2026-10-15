@@ -196,7 +196,7 @@ export default function AllEntriesScreen() {
               <Chip
                 key={cat.id}
                 label={cat.name}
-                dot={categoryColor(cat.name, cat.kind, c)}
+                dot={categoryColor(cat.name, cat.kind, c, cat.card_cash)}
                 selected={filters.categories.includes(cat.id)}
                 onPress={() => toggleIn('categories', cat.id)}
               />
@@ -360,7 +360,7 @@ export default function AllEntriesScreen() {
                 <Chip
                   key={cat.id}
                   label={cat.name}
-                  dot={categoryColor(cat.name, cat.kind, c)}
+                  dot={categoryColor(cat.name, cat.kind, c, cat.card_cash)}
                   selected={false}
                   onPress={() => categorizePicked(cat.id)}
                 />

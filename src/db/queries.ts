@@ -1,20 +1,47 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
-import { DEFAULT_CYCLE_START_DAY, ensureQuickDefaults, moveLegacyAccountsToBanks } from '@/db/schema';
+import {
+  DEFAULT_CYCLE_START_DAY,
+  ensureCardCashCategory,
+  ensureQuickDefaults,
+  moveLegacyAccountsToBanks,
+} from '@/db/schema';
 import { todayISO } from '@/lib/dates';
 
 // ---------- Types ----------
 
 export type AccountKind = 'credit' | 'debit';
 /**
- * Card entries: a payment lowers what you owe; a swipe (card -> bank) and a withdrawal (card -> cash)
- * both raise it. For swipes and withdrawals only the fee counts as spending.
+ * Card entries: a payment lowers what you owe. `card_swipe` is Credit → Debit (money moved off the card into a
+ * bank, by swiping it on a machine): it raises what you owe but is not spending. Spending that money is a normal
+ * expense filed under the Credit → Debit category. (Older data also had 'card_withdrawal'; the v8 upgrade turned
+ * those into `card_swipe`.)
  */
-export type TxType = 'expense' | 'income' | 'card_payment' | 'card_swipe' | 'card_withdrawal';
+export type TxType = 'expense' | 'income' | 'card_payment' | 'card_swipe';
+/** How a card purchase was made: on a shop's machine ('pos') or online (null). */
+export type Channel = 'pos' | null;
 export type DebtKind = 'lent' | 'borrowed' | 'got_back' | 'paid_back';
 
-/** A spending category (Credit Card / Salary / Others / ...). */
-export type Account = { id: number; name: string; kind: AccountKind; sort: number; archived: number };
+/**
+ * A spending category (Credit Card / Salary / Others / Credit → Debit / ...). `card_cash` = 1 marks Credit → Debit:
+ * credit spending of money already moved off the card, so it never adds to what the card owes.
+ */
+export type Account = {
+  id: number;
+  name: string;
+  kind: AccountKind;
+  sort: number;
+  archived: number;
+  card_cash: number;
+};
+
+/** True for a category whose expenses are charged to the card (Online / POS purchases). */
+export const chargedToCard = (a: { kind: AccountKind | null; card_cash?: number | null } | null | undefined) =>
+  a?.kind === 'credit' && !a.card_cash;
+
+/** SQL for an expense charged to the card, given the transaction and category aliases. */
+const CARD_PURCHASE_SQL = (t: string, a: string) =>
+  `${t}.type = 'expense' AND ${a}.kind = 'credit' AND ${a}.card_cash = 0`;
 
 /** A saved shortcut for a common expense: pick it, type an amount, done. */
 export type QuickExpense = {
@@ -26,6 +53,7 @@ export type QuickExpense = {
   archived: number;
   account_name: string | null;
   account_kind: AccountKind | null;
+  account_card_cash: number | null;
   bank_name: string | null;
 };
 
@@ -55,8 +83,10 @@ export type Tx = {
   source: string | null;
   note: string | null;
   created_at: string;
+  channel: Channel;
   account_name: string | null;
   account_kind: AccountKind | null;
+  account_card_cash: number | null;
   bank_name: string | null;
   /** Part of `amount` you paid on behalf of others; it sits in their debts, not in your spending. */
   shared: number;
@@ -75,8 +105,9 @@ export type ShareRow = Share & { name: string };
 export type TxInput = {
   type: TxType;
   amount: number;
-  fee?: number;
   date: string;
+  /** Only for a card purchase: 'pos' or null (online). */
+  channel?: Channel;
   /** Spending category; only expenses have one. */
   account_id?: number | null;
   /** Bank the money was paid from / received in. */
@@ -94,7 +125,7 @@ export type TxInput = {
 };
 
 /** Spending for one category (account) in a cycle. `id` is null for entries with no category. */
-export type CategoryTotal = { id: number | null; name: string; kind: AccountKind; total: number };
+export type CategoryTotal = { id: number | null; name: string; kind: AccountKind; card_cash: number; total: number };
 
 /** Spending paid from one bank in a cycle. */
 export type BankTotal = { id: number; name: string; total: number };
@@ -113,8 +144,9 @@ export type CycleTotals = {
   /** All the money that went out: your spending plus what you paid for others. */
   totalPaid: number;
   income: number;
+  /** Money moved off the card into a bank this cycle. Not income; Home can show it beside income. */
+  creditToDebit: number;
   cardPayments: number;
-  swipeFees: number;
 };
 
 /** `balance` is positive when they owe you. `they_owe` and `i_owe` are the two sides on their own: money lent minus what came back, and money borrowed minus what you paid back. */
@@ -199,7 +231,7 @@ export async function archiveBank(db: SQLiteDatabase, id: number) {
 // ---------- Quick add ----------
 
 const QUICK_SELECT = `
-  SELECT q.*, a.name AS account_name, a.kind AS account_kind, b.name AS bank_name
+  SELECT q.*, a.name AS account_name, a.kind AS account_kind, a.card_cash AS account_card_cash, b.name AS bank_name
   FROM quick_expenses q
   LEFT JOIN accounts a ON a.id = q.account_id
   LEFT JOIN banks b ON b.id = q.bank_id`;
@@ -352,7 +384,7 @@ const SHARED_SQL = (t: string) => `COALESCE((SELECT SUM(d.amount) FROM debt_entr
 const MINE_SQL = (t: string) => `(${t}.amount - ${SHARED_SQL(t)})`;
 
 const TX_SELECT = `
-  SELECT t.*, a.name AS account_name, a.kind AS account_kind, b.name AS bank_name,
+  SELECT t.*, a.name AS account_name, a.kind AS account_kind, a.card_cash AS account_card_cash, b.name AS bank_name,
     ${SHARED_SQL('t')} AS shared,
     (SELECT GROUP_CONCAT(name, ', ') FROM
       (SELECT p.name AS name FROM debt_entries d JOIN people p ON p.id = d.person_id
@@ -365,10 +397,20 @@ const TX_SELECT = `
   LEFT JOIN accounts a ON a.id = t.account_id
   LEFT JOIN banks b ON b.id = t.bank_id`;
 
-export function listTransactions(db: SQLiteDatabase, cycleId: number, limit?: number) {
+/** Every entry of a cycle, Credit → Debit moves included, newest first. */
+export function listTransactions(db: SQLiteDatabase, cycleId: number) {
+  return db.getAllAsync<Tx>(`${TX_SELECT} WHERE t.cycle_id = ? ORDER BY t.date DESC, t.id DESC`, cycleId);
+}
+
+/**
+ * The latest entries of a cycle for Home. Credit → Debit moves are left out: they are not spending, and they
+ * live on the Credit screen.
+ */
+export function listRecentTransactions(db: SQLiteDatabase, cycleId: number, limit: number) {
   return db.getAllAsync<Tx>(
-    `${TX_SELECT} WHERE t.cycle_id = ? ORDER BY t.date DESC, t.id DESC ${limit ? `LIMIT ${Math.floor(limit)}` : ''}`,
+    `${TX_SELECT} WHERE t.cycle_id = ? AND t.type != 'card_swipe' ORDER BY t.date DESC, t.id DESC LIMIT ?`,
     cycleId,
+    Math.floor(limit),
   );
 }
 
@@ -390,7 +432,7 @@ export function listCycles(db: SQLiteDatabase) {
 export function listCardTransactions(db: SQLiteDatabase, cycleId: number) {
   return db.getAllAsync<Tx>(
     `${TX_SELECT}
-     WHERE t.cycle_id = ? AND (t.type IN ('card_payment', 'card_swipe', 'card_withdrawal') OR (t.type = 'expense' AND a.kind = 'credit'))
+     WHERE t.cycle_id = ? AND (t.type IN ('card_payment', 'card_swipe') OR (${CARD_PURCHASE_SQL('t', 'a')}))
      ORDER BY t.date DESC, t.id DESC`,
     cycleId,
   );
@@ -402,8 +444,11 @@ export function getTransaction(db: SQLiteDatabase, id: number) {
 
 const clean = (s?: string | null) => (s && s.trim() ? s.trim() : null);
 
-/** Entries whose money can be paid on behalf of friends: an expense, or cash/money taken out on the card. */
-const SHAREABLE: TxType[] = ['expense', 'card_swipe', 'card_withdrawal'];
+/**
+ * Entries whose money can be paid on behalf of friends. New shares go on expenses; a Credit → Debit move keeps any
+ * shares it was saved with before it stopped counting as spending.
+ */
+const SHAREABLE: TxType[] = ['expense', 'card_swipe'];
 
 /** Replaces the friends' shares of an expense; each becomes an "I lent" entry on the expense's date. */
 async function saveShares(db: SQLiteDatabase, txId: number, tx: TxInput) {
@@ -439,13 +484,13 @@ export async function addTransaction(db: SQLiteDatabase, cycleId: number, tx: Tx
   let id = 0;
   await db.withTransactionAsync(async () => {
     const res = await db.runAsync(
-      `INSERT INTO transactions (cycle_id, type, amount, fee, date, account_id, bank_id, place, source, note, created_at)
+      `INSERT INTO transactions (cycle_id, type, amount, date, channel, account_id, bank_id, place, source, note, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       cycleId,
       tx.type,
       tx.amount,
-      tx.fee ?? 0,
       tx.date,
+      tx.channel ?? null,
       tx.account_id ?? null,
       tx.bank_id ?? null,
       clean(tx.place),
@@ -463,12 +508,12 @@ export async function addTransaction(db: SQLiteDatabase, cycleId: number, tx: Tx
 export async function updateTransaction(db: SQLiteDatabase, id: number, tx: TxInput) {
   await db.withTransactionAsync(async () => {
     await db.runAsync(
-      `UPDATE transactions SET type = ?, amount = ?, fee = ?, date = ?, account_id = ?, bank_id = ?, place = ?, source = ?, note = ?
+      `UPDATE transactions SET type = ?, amount = ?, fee = 0, date = ?, channel = ?, account_id = ?, bank_id = ?, place = ?, source = ?, note = ?
        WHERE id = ?`,
       tx.type,
       tx.amount,
-      tx.fee ?? 0,
       tx.date,
+      tx.channel ?? null,
       tx.account_id ?? null,
       tx.bank_id ?? null,
       clean(tx.place),
@@ -500,24 +545,23 @@ export async function deleteTransaction(db: SQLiteDatabase, id: number) {
 
 /**
  * Spending rules:
- *  - expense on a credit account -> credit spent; any other expense (or no account) -> debit spent
- *  - a card swipe's fee is a cost of using the card, so it counts as credit spent
- *  - income, card payments and swipe principal are not spending
+ *  - expense in a credit category (Credit Card, Credit → Debit) -> credit spent; any other (or none) -> debit spent
+ *  - income, card payments and Credit → Debit moves are not spending (fees are not tracked; older ones are ignored)
  */
 export async function getCycleTotals(db: SQLiteDatabase, cycleId: number): Promise<CycleTotals> {
   const row = await db.getFirstAsync<{
     debit: number;
     credit: number;
-    fees: number;
     income: number;
+    moved: number;
     payments: number;
     shared: number;
   }>(
     `SELECT
        COALESCE(SUM(CASE WHEN t.type = 'expense' AND COALESCE(a.kind, 'debit') = 'debit' THEN ${MINE_SQL('t')} END), 0) AS debit,
        COALESCE(SUM(CASE WHEN t.type = 'expense' AND a.kind = 'credit' THEN ${MINE_SQL('t')} END), 0) AS credit,
-       COALESCE(SUM(CASE WHEN t.type IN ('card_swipe', 'card_withdrawal') THEN t.fee END), 0) AS fees,
        COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount END), 0) AS income,
+       COALESCE(SUM(CASE WHEN t.type = 'card_swipe' THEN t.amount END), 0) AS moved,
        COALESCE(SUM(CASE WHEN t.type = 'card_payment' THEN t.amount END), 0) AS payments,
        COALESCE(SUM(CASE WHEN t.type = 'expense' THEN ${SHARED_SQL('t')} END), 0) AS shared
      FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
@@ -525,9 +569,9 @@ export async function getCycleTotals(db: SQLiteDatabase, cycleId: number): Promi
     cycleId,
   );
   const debitSpent = row?.debit ?? 0;
-  const creditSpent = (row?.credit ?? 0) + (row?.fees ?? 0);
+  const creditSpent = row?.credit ?? 0;
   return {
-    breakdown: await getBreakdown(db, cycleId, row?.fees ?? 0),
+    breakdown: await getBreakdown(db, cycleId),
     banks: await getBankTotals(db, cycleId),
     debitSpent,
     creditSpent,
@@ -535,8 +579,8 @@ export async function getCycleTotals(db: SQLiteDatabase, cycleId: number): Promi
     sharedOut: row?.shared ?? 0,
     totalPaid: debitSpent + creditSpent + (row?.shared ?? 0),
     income: row?.income ?? 0,
+    creditToDebit: row?.moved ?? 0,
     cardPayments: row?.payments ?? 0,
-    swipeFees: row?.fees ?? 0,
   };
 }
 
@@ -551,13 +595,10 @@ async function getBankTotals(db: SQLiteDatabase, cycleId: number): Promise<BankT
   );
 }
 
-/**
- * One row per category with spending, in the order the categories are set up.
- * Swipe fees are a cost of the card, so they are added to the credit category.
- */
-async function getBreakdown(db: SQLiteDatabase, cycleId: number, swipeFees: number): Promise<CategoryTotal[]> {
-  const rows = await db.getAllAsync<CategoryTotal & { archived: number }>(
-    `SELECT a.id, a.name, a.kind, a.archived, COALESCE(SUM(${MINE_SQL('t')}), 0) AS total
+/** One row per category with spending, in the order the categories are set up. */
+async function getBreakdown(db: SQLiteDatabase, cycleId: number): Promise<CategoryTotal[]> {
+  const rows = await db.getAllAsync<CategoryTotal>(
+    `SELECT a.id, a.name, a.kind, a.card_cash, COALESCE(SUM(${MINE_SQL('t')}), 0) AS total
      FROM accounts a
      LEFT JOIN transactions t ON t.account_id = a.id AND t.cycle_id = ? AND t.type = 'expense'
      GROUP BY a.id ORDER BY a.sort, a.id`,
@@ -569,24 +610,19 @@ async function getBreakdown(db: SQLiteDatabase, cycleId: number, swipeFees: numb
     cycleId,
   );
 
-  const list: CategoryTotal[] = rows.map(({ id, name, kind, total }) => ({ id, name, kind, total }));
-  let uncategorised = none?.total ?? 0;
-
-  if (swipeFees > 0) {
-    const card = rows.find((r) => r.kind === 'credit' && !r.archived);
-    if (card) list[rows.indexOf(card)].total += swipeFees;
-    else uncategorised += swipeFees;
-  }
-  if (uncategorised > 0) list.push({ id: null, name: 'Uncategorised', kind: 'debit', total: uncategorised });
+  const list = [...rows];
+  const uncategorised = none?.total ?? 0;
+  if (uncategorised > 0)
+    list.push({ id: null, name: 'Uncategorised', kind: 'debit', card_cash: 0, total: uncategorised });
 
   return list.filter((c) => c.total > 0);
 }
 
-/** Spending per day (expenses + swipe fees) for the bar chart. */
+/** Spending per day (your share of expenses) for the bar chart. */
 export function getDailySpend(db: SQLiteDatabase, cycleId: number) {
   return db.getAllAsync<{ date: string; total: number }>(
-    `SELECT date, SUM(CASE WHEN type = 'expense' THEN ${MINE_SQL('transactions')} WHEN type IN ('card_swipe', 'card_withdrawal') THEN fee ELSE 0 END) AS total
-     FROM transactions WHERE cycle_id = ? GROUP BY date HAVING total > 0 ORDER BY date`,
+    `SELECT date, SUM(${MINE_SQL('transactions')}) AS total
+     FROM transactions WHERE cycle_id = ? AND type = 'expense' GROUP BY date HAVING total > 0 ORDER BY date`,
     cycleId,
   );
 }
@@ -598,52 +634,52 @@ export type CardSummary = {
   owed: number;
   available: number;
   usedFraction: number;
-  creditSpent: number;
+  /** This cycle's purchases on the card at a shop's machine. */
+  pos: number;
   /**
-   * Purchases on the card this cycle (an expense whose category is the credit card), excluding fees.
-   * Entered from Home with the Credit Card category or from the Credit screen's Online button; same thing.
+   * This cycle's purchases on the card online. A purchase entered on Home under the Credit Card category is the
+   * same thing, so it is counted here (or under POS).
    */
   online: number;
-  swipes: number;
-  withdrawals: number;
-  /** Fees on swipes and withdrawals this cycle. */
-  swipeFees: number;
+  /** Money moved off the card into a bank this cycle. */
+  creditToDebit: number;
+  /** What was spent this cycle under the Credit → Debit category (full amounts, friends' shares included). */
+  creditToDebitSpent: number;
   payments: number;
 };
 
-/** Card owed is all-time: opening balance + card purchases + swipes + withdrawals - bill payments. */
+/** Card owed is all-time: opening balance + POS and online purchases + Credit → Debit moves - bill payments. */
 export async function getCardSummary(db: SQLiteDatabase, cycleId: number): Promise<CardSummary> {
   const limit = await getNumberSetting(db, 'credit_limit');
   const opening = await getNumberSetting(db, 'card_opening_balance');
-  const all = await db.getFirstAsync<{ purchases: number; cash: number; payments: number }>(
+  const all = await db.getFirstAsync<{ purchases: number; moved: number; payments: number }>(
     `SELECT
-       COALESCE(SUM(CASE WHEN t.type = 'expense' AND a.kind = 'credit' THEN t.amount END), 0) AS purchases,
-       COALESCE(SUM(CASE WHEN t.type IN ('card_swipe', 'card_withdrawal') THEN t.amount END), 0) AS cash,
+       COALESCE(SUM(CASE WHEN ${CARD_PURCHASE_SQL('t', 'a')} THEN t.amount END), 0) AS purchases,
+       COALESCE(SUM(CASE WHEN t.type = 'card_swipe' THEN t.amount END), 0) AS moved,
        COALESCE(SUM(CASE WHEN t.type = 'card_payment' THEN t.amount END), 0) AS payments
      FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id`,
   );
-  const owed = opening + (all?.purchases ?? 0) + (all?.cash ?? 0) - (all?.payments ?? 0);
-  const cycle = await db.getFirstAsync<{ online: number; swipes: number; withdrawals: number; payments: number }>(
+  const owed = opening + (all?.purchases ?? 0) + (all?.moved ?? 0) - (all?.payments ?? 0);
+  const cycle = await db.getFirstAsync<Omit<CardSummary, 'limit' | 'owed' | 'available' | 'usedFraction'>>(
     `SELECT
-       COALESCE(SUM(CASE WHEN t.type = 'expense' AND a.kind = 'credit' THEN t.amount END), 0) AS online,
-       COALESCE(SUM(CASE WHEN t.type = 'card_swipe' THEN t.amount END), 0) AS swipes,
-       COALESCE(SUM(CASE WHEN t.type = 'card_withdrawal' THEN t.amount END), 0) AS withdrawals,
+       COALESCE(SUM(CASE WHEN ${CARD_PURCHASE_SQL('t', 'a')} AND t.channel = 'pos' THEN t.amount END), 0) AS pos,
+       COALESCE(SUM(CASE WHEN ${CARD_PURCHASE_SQL('t', 'a')} AND t.channel IS NULL THEN t.amount END), 0) AS online,
+       COALESCE(SUM(CASE WHEN t.type = 'card_swipe' THEN t.amount END), 0) AS creditToDebit,
+       COALESCE(SUM(CASE WHEN t.type = 'expense' AND a.card_cash = 1 THEN t.amount END), 0) AS creditToDebitSpent,
        COALESCE(SUM(CASE WHEN t.type = 'card_payment' THEN t.amount END), 0) AS payments
      FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id
      WHERE t.cycle_id = ?`,
     cycleId,
   );
-  const totals = await getCycleTotals(db, cycleId);
   return {
     limit,
     owed,
     available: limit - owed,
     usedFraction: limit > 0 ? Math.min(Math.max(owed / limit, 0), 1) : 0,
-    creditSpent: totals.creditSpent,
+    pos: cycle?.pos ?? 0,
     online: cycle?.online ?? 0,
-    swipes: cycle?.swipes ?? 0,
-    withdrawals: cycle?.withdrawals ?? 0,
-    swipeFees: totals.swipeFees,
+    creditToDebit: cycle?.creditToDebit ?? 0,
+    creditToDebitSpent: cycle?.creditToDebitSpent ?? 0,
     payments: cycle?.payments ?? 0,
   };
 }
@@ -753,7 +789,7 @@ export async function deletePerson(db: SQLiteDatabase, id: number) {
 /** Column whitelists keep restore safe even if a backup file was hand-edited. */
 const BACKUP_TABLES = {
   settings: ['key', 'value'],
-  accounts: ['id', 'name', 'kind', 'sort', 'archived'],
+  accounts: ['id', 'name', 'kind', 'sort', 'archived', 'card_cash'],
   banks: ['id', 'name', 'sort', 'archived'],
   quick_expenses: ['id', 'name', 'account_id', 'bank_id', 'sort', 'archived'],
   cycles: ['id', 'start_date', 'end_date', 'closed_at', 'snap_card_owed', 'snap_owed_to_me', 'snap_i_owe'],
@@ -764,6 +800,7 @@ const BACKUP_TABLES = {
     'amount',
     'fee',
     'date',
+    'channel',
     'account_id',
     'bank_id',
     'place',
@@ -791,8 +828,11 @@ const RESTORE_ORDER = [
   'settings',
 ] as const;
 
-/** Version 2 added banks, 3 quick-adds, 4 tags. Older backups still restore. */
-export type Backup = { app: 'finance-tracker'; version: 1 | 2 | 3 | 4; exportedAt: string } & Record<
+/** Columns an older backup does not have, and what they start as. */
+const COLUMN_DEFAULTS: Record<string, string | number | null> = { card_cash: 0 };
+
+/** Version 2 added banks, 3 quick-adds, 4 tags, 5 POS purchases and the Credit → Debit category. Older backups still restore. */
+export type Backup = { app: 'finance-tracker'; version: 1 | 2 | 3 | 4 | 5; exportedAt: string } & Record<
   keyof typeof BACKUP_TABLES,
   Record<string, string | number | null>[]
 >;
@@ -804,12 +844,12 @@ export async function exportBackup(db: SQLiteDatabase): Promise<Backup> {
     const where = table === 'settings' ? " WHERE key NOT IN ('theme_mode', 'font_choice')" : '';
     data[table] = await db.getAllAsync(`SELECT * FROM ${table}${where}`);
   }
-  return { app: 'finance-tracker', version: 4, exportedAt: new Date().toISOString(), ...data } as Backup;
+  return { app: 'finance-tracker', version: 5, exportedAt: new Date().toISOString(), ...data } as Backup;
 }
 
 export async function restoreBackup(db: SQLiteDatabase, backup: unknown) {
   const b = backup as Partial<Backup>;
-  if (!b || b.app !== 'finance-tracker' || (b.version !== 1 && b.version !== 2 && b.version !== 3 && b.version !== 4)) {
+  if (!b || b.app !== 'finance-tracker' || ![1, 2, 3, 4, 5].includes(b.version as number)) {
     throw new Error('This is not a Finance Tracker backup file.');
   }
   for (const table of Object.keys(BACKUP_TABLES) as (keyof typeof BACKUP_TABLES)[]) {
@@ -833,12 +873,14 @@ export async function restoreBackup(db: SQLiteDatabase, backup: unknown) {
       const sql = `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`;
       for (const row of (b[table] ?? []) as Record<string, string | number | null>[]) {
         if (table === 'settings' && (row.key === 'theme_mode' || row.key === 'font_choice')) continue;
-        await db.runAsync(sql, ...cols.map((c) => row[c] ?? null));
+        await db.runAsync(sql, ...cols.map((c) => row[c] ?? COLUMN_DEFAULTS[c] ?? null));
       }
     }
     // An older backup keeps its banks in the accounts table; move them out (and seed banks if none).
     await moveLegacyAccountsToBanks(db);
     // Backups made before quick-adds existed have none; start from the defaults.
     await ensureQuickDefaults(db);
+    // Older backups have withdrawals and no Credit → Debit category.
+    await ensureCardCashCategory(db);
   });
 }

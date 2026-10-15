@@ -11,13 +11,14 @@ import { useColors } from '@/hooks/use-theme';
 import { formatPKR } from '@/lib/money';
 
 /**
- * The three ways the card gets used. "Online" is a purchase, and it is the same thing as an expense
- * entered on Home with the Credit Card category, so both show up here.
+ * The three ways the card gets used. POS and Online are purchases: the same thing as an expense entered on Home
+ * with the Credit Card category, so both show up here. Credit → Debit moves money off the card into a bank; it
+ * adds to what you owe but is not spending (spending it is an expense under the Credit → Debit category).
  */
 const CATEGORIES = [
-  { type: 'expense', label: 'Online' },
-  { type: 'card_swipe', label: 'Swipe' },
-  { type: 'card_withdrawal', label: 'Withdrawal' },
+  { key: 'pos', type: 'expense', label: 'POS' },
+  { key: 'online', type: 'expense', label: 'Online' },
+  { key: 'creditToDebit', type: 'card_swipe', label: 'Credit → Debit' },
 ] as const;
 
 export default function CreditScreen() {
@@ -36,7 +37,6 @@ export default function CreditScreen() {
   const hasLimit = card.limit > 0;
   const overLimit = hasLimit && card.owed > card.limit;
   const usedPct = hasLimit ? Math.round((card.owed / card.limit) * 100) : 0;
-  const totals = { expense: card.online, card_swipe: card.swipes, card_withdrawal: card.withdrawals };
 
   let i = 0;
   return (
@@ -81,11 +81,13 @@ export default function CreditScreen() {
           <Row>
             {CATEGORIES.map((k) => (
               <Button
-                key={k.type}
+                key={k.key}
                 label={k.label}
                 variant="ghost"
-                style={{ flex: 1 }}
-                onPress={() => router.push({ pathname: '/add', params: { scope: 'card', type: k.type } })}
+                style={{ flex: k.key === 'creditToDebit' ? 1.7 : 1 }}
+                onPress={() =>
+                  router.push({ pathname: '/add', params: { scope: 'card', type: k.type, channel: k.key } })
+                }
               />
             ))}
           </Row>
@@ -100,12 +102,12 @@ export default function CreditScreen() {
         <SectionTitle>This cycle</SectionTitle>
         <Card style={{ marginTop: Spacing.two, gap: 0, paddingVertical: Spacing.one }}>
           {CATEGORIES.map((k) => (
-            <View key={k.type}>
-              <Line label={k.label} value={totals[k.type]} strong />
+            <View key={k.key}>
+              <Line label={k.label} value={card[k.key]} strong />
               <Divider />
             </View>
           ))}
-          <Line label="Fees (swipe and withdrawal)" value={card.swipeFees} />
+          <Line label="Spent under Credit → Debit" value={card.creditToDebitSpent} />
           <Divider />
           <Line label="Payments" value={card.payments} />
         </Card>

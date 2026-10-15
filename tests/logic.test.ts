@@ -109,11 +109,12 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
 
   await test('seeded accounts', () => {
     assert.deepEqual(
-      accts.map((a) => [a.name, a.kind]),
+      accts.map((a) => [a.name, a.kind, a.card_cash]),
       [
-        ['Credit Card', 'credit'],
-        ['Salary', 'debit'],
-        ['Others', 'debit'],
+        ['Credit Card', 'credit', 0],
+        ['Salary', 'debit', 0],
+        ['Others', 'debit', 0],
+        ['Credit → Debit', 'credit', 1],
       ],
     );
   });
@@ -127,26 +128,29 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
   await add({ type: 'expense', amount: R(2000), account_id: byName['Others'], bank_id: bk['Cash'], place: 'Grocery' }); // debit
   await add({ type: 'expense', amount: R(500), account_id: byName['Others'], bank_id: bk['NayaPay'] }); // debit
   await add({ type: 'expense', amount: R(300) }); // no account -> debit
-  await add({ type: 'expense', amount: R(4000), account_id: byName['Credit Card'], place: 'Shoes' }); // credit
-  await add({ type: 'card_swipe', amount: R(20000), fee: R(600), account_id: byName['Salary'] }); // owed +20000, fee 600 credit spend
-  await add({ type: 'card_payment', amount: R(10000), account_id: byName['Salary'] }); // owed -10000
+  await add({ type: 'expense', amount: R(4000), account_id: byName['Credit Card'], place: 'Shoes' }); // online purchase
+  await add({ type: 'expense', amount: R(1500), account_id: byName['Credit Card'], channel: 'pos', place: 'Dinner' }); // POS purchase
+  await add({ type: 'card_swipe', amount: R(20000) }); // Credit → Debit: owed +20000, not spending
+  await add({ type: 'expense', amount: R(7000), account_id: byName['Credit → Debit'], bank_id: bk['Meezan Bank'] }); // spending that money
+  await add({ type: 'card_payment', amount: R(10000) }); // owed -10000
 
-  await test('cycle totals: debit / credit / income, swipes & payments not spending', async () => {
+  await test('cycle totals: debit / credit / income; Credit → Debit moves & payments not spending', async () => {
     const t = await q.getCycleTotals(db, cycle.id);
     assert.equal(t.debitSpent, R(2800));
-    assert.equal(t.creditSpent, R(4000) + R(600));
-    assert.equal(t.totalSpent, R(2800) + R(4600));
-    assert.equal(t.income, R(90000));
+    assert.equal(t.creditSpent, R(4000) + R(1500) + R(7000), 'card purchases + Credit → Debit spending');
+    assert.equal(t.totalSpent, R(2800) + R(12500));
+    assert.equal(t.income, R(90000), 'money moved off the card is not income');
+    assert.equal(t.creditToDebit, R(20000), 'but Home can show it beside income');
     assert.equal(t.cardPayments, R(10000));
-    assert.equal(t.swipeFees, R(600));
   });
 
-  await test('category breakdown: individual totals, fee on the card, sums to total', async () => {
+  await test('category breakdown: individual totals, sums to total', async () => {
     const t = await q.getCycleTotals(db, cycle.id);
     const by = Object.fromEntries(t.breakdown.map((c) => [c.name, c.total]));
     assert.deepEqual(by, {
-      'Credit Card': R(4000) + R(600), // purchase + swipe fee
+      'Credit Card': R(4000) + R(1500), // online + POS
       Others: R(2000) + R(500), // two categorised expenses
+      'Credit → Debit': R(7000),
       Uncategorised: R(300), // the expense with no category
     });
     assert.ok(!('Salary' in by), 'categories with no spending are left out');
@@ -161,38 +165,50 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.deepEqual(
       t.banks.map((b) => [b.name, b.total]),
       [
+        ['Meezan Bank', R(7000)],
         ['Cash', R(2000)],
         ['NayaPay', R(500)],
       ],
     );
   });
 
-  await test('card owed = opening + purchases + swipes - payments; limit maths', async () => {
+  await test('card owed = opening + POS + online + Credit → Debit - payments; spending that money is not owed twice', async () => {
     const c = await q.getCardSummary(db, cycle.id);
-    assert.equal(c.owed, R(5000 + 4000 + 20000 - 10000));
-    assert.equal(c.available, R(100000 - 19000));
-    assert.ok(Math.abs(c.usedFraction - 0.19) < 1e-9);
-    assert.equal(c.swipes, R(20000));
-    assert.equal(c.payments, R(10000));
+    assert.equal(c.owed, R(5000 + 4000 + 1500 + 20000 - 10000));
+    assert.equal(c.available, R(100000 - 20500));
+    assert.ok(Math.abs(c.usedFraction - 0.205) < 1e-9);
+    assert.equal(c.pos, R(1500));
     assert.equal(c.online, R(4000), 'the credit-card expense entered like any other expense is the Online total');
+    assert.equal(c.creditToDebit, R(20000));
+    assert.equal(c.creditToDebitSpent, R(7000));
+    assert.equal(c.payments, R(10000));
   });
 
-  await test('daily spend groups expenses + fees only', async () => {
+  await test('daily spend groups expenses only', async () => {
     const d = await q.getDailySpend(db, cycle.id);
     assert.deepEqual(
       d.map((x) => ({ ...x })),
-      [{ date: '2026-09-10', total: R(2000 + 500 + 300 + 4000 + 600) }],
+      [{ date: '2026-09-10', total: R(2800 + 5500 + 7000) }],
     );
   });
 
-  await test('card activity list: a Home expense filed under Credit Card shows up as a card entry', async () => {
+  await test('card activity list: card purchases (wherever entered), Credit → Debit and payments only', async () => {
     const list = await q.listCardTransactions(db, cycle.id);
-    assert.equal(list.length, 3); // credit purchase, swipe, payment
-    const online = list.find((t) => t.type === 'expense')!;
-    assert.equal(online.account_name, 'Credit Card');
-    assert.equal(online.amount, R(4000));
-    // A normal debit expense must NOT appear on the Credit screen.
-    assert.ok(!list.some((t) => t.account_name === 'Others'));
+    assert.deepEqual(list.map((t) => [t.type, t.place, t.channel]).sort(), [
+      ['card_payment', null, null],
+      ['card_swipe', null, null],
+      ['expense', 'Dinner', 'pos'],
+      ['expense', 'Shoes', null],
+    ]);
+    // Debit spending and spending of Credit → Debit money must NOT appear on the Credit screen.
+    assert.ok(!list.some((t) => t.account_name === 'Others' || t.account_name === 'Credit → Debit'));
+  });
+
+  await test('Home recent entries leave out Credit → Debit moves', async () => {
+    const recent = await q.listRecentTransactions(db, cycle.id, 50);
+    assert.equal(recent.length, 9);
+    assert.ok(!recent.some((t) => t.type === 'card_swipe'));
+    assert.equal((await q.listRecentTransactions(db, cycle.id, 3)).length, 3);
   });
 
   await test('debts: balances and totals', async () => {
@@ -220,8 +236,8 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     await q.startNewCycle(db);
     const closed = await q.listClosedCycles(db);
     assert.equal(closed.length, 1);
-    assert.equal(closed[0].totalSpent, R(7400));
-    assert.equal(closed[0].snap_card_owed, R(19000));
+    assert.equal(closed[0].totalSpent, R(15300));
+    assert.equal(closed[0].snap_card_owed, R(20500));
     assert.equal(closed[0].snap_owed_to_me, R(4000));
     assert.equal(closed[0].snap_i_owe, R(2500));
     const fresh = (await q.getActiveCycle(db))!;
@@ -230,10 +246,10 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.equal(t.totalSpent, 0);
     assert.equal(t.income, 0);
     const c = await q.getCardSummary(db, fresh.id);
-    assert.equal(c.owed, R(19000), 'card debt carries over');
+    assert.equal(c.owed, R(20500), 'card debt carries over');
     assert.equal((await q.getDebtTotals(db)).owedToMe, R(4000), 'debts carry over');
     // old cycle report is unchanged
-    assert.equal((await q.listTransactions(db, cycle.id)).length, 8);
+    assert.equal((await q.listTransactions(db, cycle.id)).length, 10);
   });
 
   await test('backup -> wipe -> restore round trip', async () => {
@@ -249,8 +265,8 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
       (await q.listPeople(db)).map((x) => ({ ...x })),
     );
     const old = (await q.listClosedCycles(db2))[0];
-    assert.equal(old.totalSpent, R(7400));
-    assert.equal((await q.getCardSummary(db2, b.id)).owed, R(19000));
+    assert.equal(old.totalSpent, R(15300));
+    assert.equal((await q.getCardSummary(db2, b.id)).owed, R(20500));
     await assert.rejects(() => q.restoreBackup(db2, { app: 'other' }), /not a Finance Tracker backup/);
   });
 
@@ -328,6 +344,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
       );
       assert.deepEqual((await q.listAccounts(old, true)).map((a) => a.name).sort(), [
         'Credit Card',
+        'Credit → Debit',
         'Others',
         'Salary',
       ]);
@@ -353,7 +370,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     const { old, c } = await legacyPhone(1);
     await migrate(old);
     const v2 = JSON.parse(JSON.stringify(await q.exportBackup(old)));
-    assert.equal(v2.version, 4);
+    assert.equal(v2.version, 5);
     assert.ok(Array.isArray(v2.banks));
 
     // Build a genuine v1 file: legacy accounts, entries pointing at them, no banks table, no bank_id.
@@ -407,39 +424,120 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.ok(!(await q.listAccounts(fresh, true)).some((a) => a.name === 'Cash'), 'Cash is no longer a category');
   });
 
-  await test('card withdrawal: raises card owed, only its fee is spending, appears in card activity + daily spend', async () => {
+  /** A phone on v7: withdrawals and swipes with fees, no POS column, no Credit → Debit category. */
+  const v7Phone = async () => {
+    const d = makeDb();
+    await migrate(d);
+    await d.execAsync(`
+      DELETE FROM accounts WHERE card_cash = 1;
+      ALTER TABLE accounts DROP COLUMN card_cash;
+      ALTER TABLE transactions DROP COLUMN channel;
+      PRAGMA user_version = 7;
+    `);
+    const c = (await q.getActiveCycle(d))!;
+    await q.setSetting(d, 'card_opening_balance', String(R(1000)));
+    const card = ((await d.getFirstAsync("SELECT id FROM accounts WHERE name = 'Credit Card'")) as any).id;
+    const ins = (type: string, amount: number, fee: number, account: number | null = null) =>
+      d.runAsync(
+        "INSERT INTO transactions (cycle_id, type, amount, fee, date, account_id, created_at) VALUES (?, ?, ?, ?, '2026-09-10', ?, 'x')",
+        c.id,
+        type,
+        R(amount),
+        R(fee),
+        account,
+      );
+    await ins('card_withdrawal', 5000, 150);
+    await ins('card_swipe', 2000, 60);
+    await ins('expense', 1000, 0, card);
+    await ins('card_payment', 3000, 0);
+    return { d, c };
+  };
+
+  await test('v7 -> v8: withdrawals become Credit → Debit, old fees stop counting, the category is added once', async () => {
+    const { d, c } = await v7Phone();
+    await migrate(d);
+    await migrate(d);
+    assert.equal(((await d.getFirstAsync('PRAGMA user_version')) as any).user_version, SCHEMA_VERSION);
+    assert.equal(
+      ((await d.getFirstAsync("SELECT COUNT(*) AS n FROM transactions WHERE type = 'card_withdrawal'")) as any).n,
+      0,
+    );
+    assert.deepEqual(
+      (await q.listAccounts(d)).filter((a) => a.card_cash).map((a) => [a.name, a.kind]),
+      [['Credit → Debit', 'credit']],
+    );
+
+    const card = await q.getCardSummary(d, c.id);
+    assert.equal(card.owed, R(1000 + 5000 + 2000 + 1000 - 3000), 'what the card owes is unchanged');
+    assert.equal(card.creditToDebit, R(7000));
+    assert.equal(card.online, R(1000), 'older card purchases are online');
+    assert.equal(card.pos, 0);
+
+    const t = await q.getCycleTotals(d, c.id);
+    assert.equal(t.totalSpent, R(1000), 'fees no longer count as spending');
+    assert.deepEqual(
+      (await q.getDailySpend(d, c.id)).map((x) => ({ ...x })),
+      [{ date: '2026-09-10', total: R(1000) }],
+    );
+  });
+
+  await test('a removed Credit → Debit category is not brought back', async () => {
+    const d = makeDb();
+    await migrate(d);
+    const cc = (await q.listAccounts(d)).find((a) => a.card_cash)!;
+    await q.archiveAccount(d, cc.id);
+    await d.execAsync('PRAGMA user_version = 7');
+    await migrate(d);
+    assert.equal(((await d.getFirstAsync('SELECT COUNT(*) AS n FROM accounts WHERE card_cash = 1')) as any).n, 1);
+    assert.ok(!(await q.listAccounts(d)).some((a) => a.card_cash));
+  });
+
+  await test('restoring a v4 backup (withdrawals, no POS, no Credit → Debit) brings it to the new model', async () => {
+    const { d, c } = await v7Phone();
+    await migrate(d);
+    const v4: any = JSON.parse(JSON.stringify(await q.exportBackup(d)));
+    v4.version = 4;
+    v4.accounts = v4.accounts.filter((a: any) => !a.card_cash).map(({ card_cash, ...a }: any) => a);
+    v4.transactions = v4.transactions.map(({ channel, ...t }: any, i: number) =>
+      i === 0 ? { ...t, type: 'card_withdrawal' } : t,
+    );
+    assert.equal(v4.transactions[0].amount, R(5000));
+
+    const d2 = makeDb();
+    await migrate(d2);
+    await q.restoreBackup(d2, v4);
+    assert.deepEqual(
+      (await q.listAccounts(d2)).map((a) => [a.name, a.card_cash]),
+      [
+        ['Credit Card', 0],
+        ['Salary', 0],
+        ['Others', 0],
+        ['Credit → Debit', 1],
+      ],
+    );
+    const card = await q.getCardSummary(d2, c.id);
+    assert.equal(card.creditToDebit, R(7000));
+    assert.equal(card.owed, R(6000));
+  });
+
+  await test('a POS purchase entered on Home: owed, POS total, card list; editing can switch it to online', async () => {
     const d = makeDb();
     await migrate(d);
     const c = (await q.getActiveCycle(d))!;
-    await q.setSetting(d, 'card_opening_balance', String(R(1000)));
-    await q.addTransaction(d, c.id, { type: 'card_withdrawal', amount: R(5000), fee: R(150), date: '2026-09-10' });
-    await q.addTransaction(d, c.id, { type: 'card_swipe', amount: R(2000), fee: R(60), date: '2026-09-10' });
-    await q.addTransaction(d, c.id, { type: 'card_payment', amount: R(3000), date: '2026-09-11' });
-
-    const card = await q.getCardSummary(d, c.id);
-    assert.equal(card.owed, R(1000 + 5000 + 2000 - 3000));
-    assert.equal(card.withdrawals, R(5000));
-    assert.equal(card.swipes, R(2000));
-    assert.equal(card.payments, R(3000));
-    assert.equal(card.swipeFees, R(210));
-
-    const t = await q.getCycleTotals(d, c.id);
-    assert.equal(t.totalSpent, R(210), 'only the fees are spending');
-    assert.equal(t.creditSpent, R(210));
-    assert.equal(
-      t.breakdown.find((x) => x.name === 'Credit Card')!.total,
-      R(210),
-      'fees land on the Credit Card category',
-    );
-    assert.equal(
-      t.breakdown.reduce((a, x) => a + x.total, 0),
-      t.totalSpent,
-    );
-    assert.equal((await q.listCardTransactions(d, c.id)).length, 3);
-    assert.deepEqual(
-      (await q.getDailySpend(d, c.id)).map((x) => ({ ...x })),
-      [{ date: '2026-09-10', total: R(210) }],
-    );
+    const card = (await q.listAccounts(d)).find((a) => a.name === 'Credit Card')!;
+    const id = await q.addTransaction(d, c.id, {
+      type: 'expense',
+      amount: R(2500),
+      account_id: card.id,
+      channel: 'pos',
+      date: '2026-09-10',
+    });
+    let s = await q.getCardSummary(d, c.id);
+    assert.deepEqual([s.owed, s.pos, s.online], [R(2500), R(2500), 0]);
+    assert.equal((await q.getTransaction(d, id))!.channel, 'pos');
+    await q.updateTransaction(d, id, { type: 'expense', amount: R(2500), account_id: card.id, date: '2026-09-10' });
+    s = await q.getCardSummary(d, c.id);
+    assert.deepEqual([s.owed, s.pos, s.online], [R(2500), 0, R(2500)]);
   });
 
   await test('v3 -> v4 rebuild keeps every row and id, allows withdrawals, restores the index', async () => {
@@ -499,7 +597,10 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
         { id: 9, type: 'card_swipe', amount: R(400), fee: R(12), bank: null, place: null, note: null },
       ],
     );
-    await q.addTransaction(d, c.id, { type: 'card_withdrawal', amount: R(50), date: '2026-09-12' });
+    await d.runAsync(
+      "INSERT INTO transactions (cycle_id, type, amount, date, created_at) VALUES (?, 'card_withdrawal', 1, '2026-09-12', 'x')",
+      c.id,
+    );
     assert.equal((await q.listTransactions(d, c.id)).length, 3);
     assert.ok(await d.getFirstAsync("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_tx_cycle'"));
     assert.equal(
@@ -594,7 +695,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     await migrate(d);
     await q.addQuick(d, 'Rickshaw', null, null);
     const backup = JSON.parse(JSON.stringify(await q.exportBackup(d)));
-    assert.equal(backup.version, 4);
+    assert.equal(backup.version, 5);
     const d2 = makeDb();
     await migrate(d2);
     await q.restoreBackup(d2, backup);
@@ -692,13 +793,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
       date: '2026-09-18',
     });
     await add(cyc2.id, { type: 'expense', amount: R(300), date: '2026-09-18' }); // no category, no bank
-    await add(cyc2.id, {
-      type: 'card_withdrawal',
-      amount: R(5000),
-      fee: R(150),
-      bank_id: bk['Cash'],
-      date: '2026-09-15',
-    });
+    await add(cyc2.id, { type: 'card_swipe', amount: R(5000), date: '2026-09-15' }); // Credit → Debit
     await add(cyc2.id, { type: 'card_payment', amount: R(3000), bank_id: bk['Meezan Bank'], date: '2026-09-16' });
     await add(cyc2.id, {
       type: 'income',
@@ -713,11 +808,12 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     return { txs, f, cats, bk, cyc1, cyc2 };
   };
 
-  await test('all entries: no filter shows everything across cycles, newest first', async () => {
+  await test('all entries: no filter shows everything but Credit → Debit moves, across cycles, newest first', async () => {
     const { txs, f } = await ledger();
     assert.equal(txs.length, 9);
     const all = f({});
-    assert.equal(all.length, 9);
+    assert.equal(all.length, 8);
+    assert.ok(!all.some((t) => t.type === 'card_swipe'), 'a Credit → Debit move is not spending');
     const dates = all.map((t) => t.date);
     assert.deepEqual(dates, [...dates].sort().reverse());
     assert.equal(activeFilterCount(NO_FILTERS), 0);
@@ -734,7 +830,8 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
       f({ type: 'card' })
         .map((t) => t.type)
         .sort(),
-      ['card_payment', 'card_withdrawal'],
+      ['card_payment', 'card_swipe', 'expense'],
+      'Card = card purchases, Credit → Debit moves and payments',
     );
   });
 
@@ -762,9 +859,9 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
 
   await test('all entries: bank filter (any entry type), incl. "no bank"', async () => {
     const { f, bk } = await ledger();
-    assert.equal(f({ banks: [bk['Cash']] }).length, 3); // 2 expenses + the withdrawal
+    assert.equal(f({ banks: [bk['Cash']] }).length, 2); // 2 expenses
     assert.equal(f({ banks: [bk['Meezan Bank']] }).length, 2); // salary income + card payment
-    assert.equal(f({ banks: [bk['Meezan Bank'], bk['Cash']] }).length, 5, 'several banks at once');
+    assert.equal(f({ banks: [bk['Meezan Bank'], bk['Cash']] }).length, 4, 'several banks at once');
     const none = f({ banks: [NONE] });
     assert.deepEqual(
       none.map((t) => t.amount).sort((a, b) => a - b),
@@ -774,7 +871,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
 
   await test('all entries: period filter', async () => {
     const { f, txs } = await ledger();
-    assert.equal(f({ period: 'cycle' }).length, 7);
+    assert.equal(f({ period: 'cycle' }).length, 6, 'the Credit → Debit move only shows under Card');
     assert.equal(f({ period: 'last' }).length, 2);
     assert.deepEqual(
       f({ period: '7d' })
@@ -784,10 +881,10 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     );
     assert.equal(
       f({ period: '30d' }).length,
-      7,
+      6,
       '30 days back from 22 Sep reaches 24 Aug: the August entries are outside it',
     );
-    assert.equal(f({ period: 'all' }).length, txs.length);
+    assert.equal(f({ period: 'all' }).length, txs.length - 1);
   });
 
   await test('all entries: search matches text, notes, banks, categories and amounts (with or without commas)', async () => {
@@ -806,7 +903,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.equal(f({ query: '2300' }).length, 1);
     assert.equal(f({ query: 'grocer cash' }).length, 2, 'every word must match');
     assert.equal(f({ query: 'zzz' }).length, 0);
-    assert.equal(f({ query: '   ' }).length, 9, 'blank search is no filter');
+    assert.equal(f({ query: '   ' }).length, 8, 'blank search is no filter');
   });
 
   await test('all entries: filters combine, and sorting works', async () => {
@@ -831,26 +928,26 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     const { f } = await ledger();
     const all = f({});
     const sum = summarize(all);
-    assert.equal(sum.count, 9);
+    assert.equal(sum.count, 8);
     assert.equal(sum.expenses, R(9000 + 2300 + 12500 + 500 + 300));
     assert.equal(sum.income, R(150000));
     assert.deepEqual(
       summarize(f({ type: 'card' })),
-      { count: 2, expenses: 0, paid: 0, income: 0 },
-      'card entries are transfers, so not summed',
+      { count: 3, expenses: R(12500), paid: R(12500), income: 0 },
+      'only the card purchase is spending; Credit → Debit and payments are transfers',
     );
 
     const groups = groupByDate(all);
     assert.deepEqual(
       groups.map((g) => g.date),
-      ['2026-09-20', '2026-09-18', '2026-09-16', '2026-09-15', '2026-09-10', '2026-08-10', '2026-08-06'],
+      ['2026-09-20', '2026-09-18', '2026-09-16', '2026-09-10', '2026-08-10', '2026-08-06'],
     );
     assert.equal(groups[0].data.length, 2);
     assert.equal(groups[0].spent, R(2300 + 12500));
     assert.equal(groups[1].spent, R(800));
     assert.equal(
       groups.reduce((n, g) => n + g.data.length, 0),
-      9,
+      8,
     );
   });
 
@@ -938,48 +1035,52 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     const card = await q.getCardSummary(d, c.id);
     assert.equal(card.owed, R(10000), 'the bank charges you for all of it');
     assert.equal(card.online, R(10000));
-    assert.equal(card.creditSpent, R(6000), 'your credit spending is only your part');
-    assert.equal((await q.getCycleTotals(d, c.id)).creditSpent, R(6000));
+    assert.equal((await q.getCycleTotals(d, c.id)).creditSpent, R(6000), 'your credit spending is only your part');
   });
 
-  await test('paying for friends on a swipe or withdrawal: shares become debts, the card still owes it all', async () => {
-    const { d, c, ali } = await sharedSetup();
-    const swipe = await q.addTransaction(d, c.id, {
-      type: 'card_swipe',
-      amount: R(10000),
-      fee: R(200),
-      date: '2026-09-11',
-      shares: [{ person_id: ali, amount: R(3000) }],
-    });
+  await test('paying for friends: Credit → Debit money spent on friends; an older move with shares keeps them', async () => {
+    const { d, c, cats, ali } = await sharedSetup();
+    await q.addTransaction(d, c.id, { type: 'card_swipe', amount: R(10000), date: '2026-09-11' });
     await q.addTransaction(d, c.id, {
-      type: 'card_withdrawal',
-      amount: R(5000),
+      type: 'expense',
+      amount: R(6000),
+      account_id: cats['Credit → Debit'],
       date: '2026-09-12',
+      shares: [{ person_id: ali, amount: R(2000) }],
+    });
+    assert.equal((await q.getCardSummary(d, c.id)).owed, R(10000), 'the card owes the move, not the spending again');
+    const t = await q.getCycleTotals(d, c.id);
+    assert.deepEqual([t.creditSpent, t.totalSpent, t.totalPaid], [R(4000), R(4000), R(6000)]);
+
+    // Before v8 a swipe itself could carry shares. Editing it keeps them unless they are cleared.
+    const old = await q.addTransaction(d, c.id, {
+      type: 'card_swipe',
+      amount: R(5000),
+      date: '2026-09-13',
       shares: [{ person_id: ali, amount: R(1000) }],
     });
-    assert.equal((await q.getCardSummary(d, c.id)).owed, R(15000));
-    assert.equal((await q.getTransaction(d, swipe))!.shared, R(3000));
     const person = (await q.listPeople(d)).find((p) => p.id === ali)!;
-    assert.deepEqual([person.balance, person.they_owe, person.i_owe], [R(4000), R(4000), 0]);
-    assert.equal((await q.getCycleTotals(d, c.id)).totalSpent, R(200), 'only the fee is spending');
-
-    await q.updateTransaction(d, swipe, { type: 'card_swipe', amount: R(10000), fee: R(200), date: '2026-09-11' });
-    assert.equal((await q.getTransaction(d, swipe))!.shared, R(3000), 'shares kept when not passed');
-    await q.updateTransaction(d, swipe, { type: 'card_swipe', amount: R(10000), date: '2026-09-11', shares: [] });
-    assert.equal((await q.getTransaction(d, swipe))!.shared, 0);
+    assert.deepEqual([person.they_owe, person.i_owe], [R(3000), 0]);
+    await q.updateTransaction(d, old, { type: 'card_swipe', amount: R(5000), date: '2026-09-13' });
+    assert.equal((await q.getTransaction(d, old))!.shared, R(1000), 'shares kept when not passed');
+    await q.updateTransaction(d, old, { type: 'card_swipe', amount: R(5000), date: '2026-09-13', shares: [] });
+    assert.equal((await q.getTransaction(d, old))!.shared, 0);
+    assert.equal((await q.getCycleTotals(d, c.id)).totalSpent, R(4000), 'moves are never spending');
   });
 
   await test('cycle list: debts belong to the cycle of their expense or their date; totals add up', async () => {
     const { d, c, ali, cats } = await sharedSetup();
+    // Dates inside the open cycle, whatever today is.
+    const on = (n: number) => addDays(c.start_date, n);
     const tx = await q.addTransaction(d, c.id, {
       type: 'expense',
       amount: R(900),
-      date: '2026-09-10',
+      date: on(0),
       account_id: cats['Others'],
       shares: [{ person_id: ali, amount: R(300) }],
     });
-    await q.addDebtEntry(d, ali, 'got_back', R(100), '2026-09-12');
-    await q.addDebtEntry(d, ali, 'borrowed', R(50), '2026-09-13');
+    await q.addDebtEntry(d, ali, 'got_back', R(100), on(1));
+    await q.addDebtEntry(d, ali, 'borrowed', R(50), on(2));
     const first = (await q.getCycle(d, c.id))!;
     const inFirst = await q.listDebtEntriesForCycle(d, first);
     assert.equal(inFirst.length, 3);

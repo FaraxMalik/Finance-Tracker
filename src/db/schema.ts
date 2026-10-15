@@ -11,7 +11,7 @@ export const DEFAULT_CYCLE_START_DAY = 5;
  * The root layout uses it as the database provider's key, so when a new migration arrives through a live
  * code reload (which does not restart the app) the database is reopened and the upgrade actually runs.
  */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /** Spending categories, seeded on first launch. Only "Credit Card" counts as credit; the rest are debit. */
 const DEFAULT_ACCOUNTS: { name: string; kind: 'credit' | 'debit' }[] = [
@@ -83,6 +83,27 @@ export async function ensureQuickDefaults(db: SQLiteDatabase) {
       i,
     );
   }
+}
+
+/** The category for spending money moved off the card into a bank (see ensureCardCashCategory). */
+export const CARD_CASH_CATEGORY = 'Credit → Debit';
+
+/**
+ * Brings card entries to the current model, safe to run repeatedly (the v8 upgrade and every restore use it):
+ *  - "Withdrawal" and "Swipe" are one thing now, Credit → Debit, stored as `card_swipe`.
+ *  - There is a Credit → Debit category for spending that money: credit spending that does not add to what the
+ *    card owes again (the move itself already did). It is created once; a removed one is not brought back.
+ */
+export async function ensureCardCashCategory(db: SQLiteDatabase) {
+  await db.runAsync("UPDATE transactions SET type = 'card_swipe' WHERE type = 'card_withdrawal'");
+  const existing = await db.getFirstAsync('SELECT id FROM accounts WHERE card_cash = 1');
+  if (existing) return;
+  const row = await db.getFirstAsync<{ next: number }>('SELECT COALESCE(MAX(sort), -1) + 1 AS next FROM accounts');
+  await db.runAsync(
+    "INSERT INTO accounts (name, kind, sort, card_cash) VALUES (?, 'credit', ?, 1)",
+    CARD_CASH_CATEGORY,
+    row?.next ?? 0,
+  );
 }
 
 export async function migrate(db: SQLiteDatabase) {
@@ -268,6 +289,22 @@ export async function migrate(db: SQLiteDatabase) {
         CREATE INDEX IF NOT EXISTS idx_txtag_tag ON tx_tags(tag_id);
         PRAGMA user_version = 7;
       `);
+    });
+  }
+  if (version < 8) {
+    await db.withTransactionAsync(async () => {
+      // A card purchase is made at a shop's machine ('pos') or online (NULL, which every older purchase was).
+      const txCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(transactions)');
+      if (!txCols.some((c) => c.name === 'channel')) {
+        await db.execAsync('ALTER TABLE transactions ADD COLUMN channel TEXT');
+      }
+      // Marks the Credit → Debit category: credit spending that the card already owes for.
+      const accCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(accounts)');
+      if (!accCols.some((c) => c.name === 'card_cash')) {
+        await db.execAsync('ALTER TABLE accounts ADD COLUMN card_cash INTEGER NOT NULL DEFAULT 0');
+      }
+      await ensureCardCashCategory(db);
+      await db.execAsync('PRAGMA user_version = 8');
     });
   }
 }
