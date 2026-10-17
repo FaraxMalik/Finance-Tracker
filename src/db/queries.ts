@@ -6,6 +6,7 @@ import {
   ensureQuickDefaults,
   moveLegacyAccountsToBanks,
 } from '@/db/schema';
+import { settleDebts, SIGNED_AMOUNT } from '@/db/settle';
 import { todayISO } from '@/lib/dates';
 
 // ---------- Types ----------
@@ -149,8 +150,20 @@ export type CycleTotals = {
   cardPayments: number;
 };
 
-/** `balance` is positive when they owe you. `they_owe` and `i_owe` are the two sides on their own: money lent minus what came back, and money borrowed minus what you paid back. */
-export type Person = { id: number; name: string; balance: number; they_owe: number; i_owe: number };
+/**
+ * `balance` is the net: positive when they owe you, negative when you owe them. `they_owe` and `i_owe` are the two
+ * sides of what is still open (money lent minus what came back, money borrowed minus what you paid back); paying
+ * back more than a side owes moves the extra to the other side, so `they_owe - i_owe` always equals `balance`.
+ * `settled_on` is the day you last came out square (null if never).
+ */
+export type Person = {
+  id: number;
+  name: string;
+  balance: number;
+  they_owe: number;
+  i_owe: number;
+  settled_on: string | null;
+};
 export type DebtEntry = {
   id: number;
   person_id: number;
@@ -160,6 +173,20 @@ export type DebtEntry = {
   note: string | null;
   /** Set when the entry is a friend's share of an expense; the expense owns it. */
   tx_id: number | null;
+  /** Set once the entry is part of a settled (squared-up) stretch with this person. */
+  settlement_id: number | null;
+};
+
+/** A stretch of entries with one person that ended square, newest first in listings. */
+export type Settlement = {
+  id: number;
+  person_id: number;
+  settled_on: string;
+  count: number;
+  lent: number;
+  got_back: number;
+  borrowed: number;
+  paid_back: number;
 };
 
 // ---------- Settings ----------
@@ -452,9 +479,12 @@ const SHAREABLE: TxType[] = ['expense', 'card_swipe'];
 
 /** Replaces the friends' shares of an expense; each becomes an "I lent" entry on the expense's date. */
 async function saveShares(db: SQLiteDatabase, txId: number, tx: TxInput) {
+  const before = await db.getAllAsync<{ person_id: number }>(
+    'SELECT person_id FROM debt_entries WHERE tx_id = ?',
+    txId,
+  );
   await db.runAsync('DELETE FROM debt_entries WHERE tx_id = ?', txId);
-  if (!SHAREABLE.includes(tx.type)) return;
-  const shares = (tx.shares ?? []).filter((s) => s.amount > 0);
+  const shares = SHAREABLE.includes(tx.type) ? (tx.shares ?? []).filter((s) => s.amount > 0) : [];
   if (shares.reduce((sum, s) => sum + s.amount, 0) > tx.amount) {
     throw new Error('The shares add up to more than the amount paid.');
   }
@@ -471,6 +501,7 @@ async function saveShares(db: SQLiteDatabase, txId: number, tx: TxInput) {
       txId,
     );
   }
+  await settleDebts(db, [...before.map((b) => b.person_id), ...shares.map((s) => s.person_id)]);
 }
 
 async function saveTags(db: SQLiteDatabase, txId: number, tagIds: number[]) {
@@ -537,9 +568,17 @@ export function listShares(db: SQLiteDatabase, txId: number) {
 
 export async function deleteTransaction(db: SQLiteDatabase, id: number) {
   await db.withTransactionAsync(async () => {
+    const people = await db.getAllAsync<{ person_id: number }>(
+      'SELECT person_id FROM debt_entries WHERE tx_id = ?',
+      id,
+    );
     await db.runAsync('DELETE FROM debt_entries WHERE tx_id = ?', id);
     await db.runAsync('DELETE FROM tx_tags WHERE tx_id = ?', id);
     await db.runAsync('DELETE FROM transactions WHERE id = ?', id);
+    await settleDebts(
+      db,
+      people.map((p) => p.person_id),
+    );
   });
 }
 
@@ -686,19 +725,25 @@ export async function getCardSummary(db: SQLiteDatabase, cycleId: number): Promi
 
 // ---------- People & debts ----------
 
-/** lent / paid_back move the balance towards "they owe me"; borrowed / got_back move it the other way. */
-const SIGNED_AMOUNT = `CASE d.kind WHEN 'lent' THEN d.amount WHEN 'paid_back' THEN d.amount ELSE -d.amount END`;
+/** The two sides of what is still open (settled entries add up to zero, so they are left out). */
+const PERSON_SQL = `SELECT p.id, p.name, COALESCE(SUM(${SIGNED_AMOUNT('d')}), 0) AS balance,
+       COALESCE(SUM(CASE WHEN d.settlement_id IS NULL THEN CASE d.kind WHEN 'lent' THEN d.amount WHEN 'got_back' THEN -d.amount ELSE 0 END END), 0) AS they_owe,
+       COALESCE(SUM(CASE WHEN d.settlement_id IS NULL THEN CASE d.kind WHEN 'borrowed' THEN d.amount WHEN 'paid_back' THEN -d.amount ELSE 0 END END), 0) AS i_owe,
+       (SELECT MAX(s.settled_on) FROM debt_settlements s WHERE s.person_id = p.id) AS settled_on
+     FROM people p LEFT JOIN debt_entries d ON d.person_id = p.id`;
 
-const SIDES_SQL = `COALESCE(SUM(CASE d.kind WHEN 'lent' THEN d.amount WHEN 'got_back' THEN -d.amount ELSE 0 END), 0) AS they_owe,
-       COALESCE(SUM(CASE d.kind WHEN 'borrowed' THEN d.amount WHEN 'paid_back' THEN -d.amount ELSE 0 END), 0) AS i_owe`;
+/** Paying back more than a side owes is money the other way: move the extra across so neither side is negative. */
+function withSides(p: Person): Person {
+  const they = p.they_owe;
+  const me = p.i_owe;
+  return { ...p, they_owe: Math.max(they, 0) + Math.max(-me, 0), i_owe: Math.max(me, 0) + Math.max(-they, 0) };
+}
 
-export function listPeople(db: SQLiteDatabase) {
-  return db.getAllAsync<Person>(
-    `SELECT p.id, p.name, COALESCE(SUM(${SIGNED_AMOUNT}), 0) AS balance,
-       ${SIDES_SQL}
-     FROM people p LEFT JOIN debt_entries d ON d.person_id = p.id
-     GROUP BY p.id ORDER BY ABS(COALESCE(SUM(${SIGNED_AMOUNT}), 0)) DESC, p.name COLLATE NOCASE`,
+export async function listPeople(db: SQLiteDatabase) {
+  const rows = await db.getAllAsync<Person>(
+    `${PERSON_SQL} GROUP BY p.id ORDER BY ABS(COALESCE(SUM(${SIGNED_AMOUNT('d')}), 0)) DESC, p.name COLLATE NOCASE`,
   );
+  return rows.map(withSides);
 }
 
 export async function getDebtTotals(db: SQLiteDatabase) {
@@ -708,18 +753,29 @@ export async function getDebtTotals(db: SQLiteDatabase) {
   return { owedToMe, iOwe, net: owedToMe - iOwe };
 }
 
-export function getPerson(db: SQLiteDatabase, id: number) {
-  return db.getFirstAsync<Person>(
-    `SELECT p.id, p.name, COALESCE(SUM(${SIGNED_AMOUNT}), 0) AS balance,
-       ${SIDES_SQL}
-     FROM people p LEFT JOIN debt_entries d ON d.person_id = p.id WHERE p.id = ? GROUP BY p.id`,
-    id,
+export async function getPerson(db: SQLiteDatabase, id: number) {
+  const row = await db.getFirstAsync<Person>(`${PERSON_SQL} WHERE p.id = ? GROUP BY p.id`, id);
+  return row ? withSides(row) : null;
+}
+
+/** Every entry with a person, open and settled, newest first. */
+export function listDebtEntries(db: SQLiteDatabase, personId: number) {
+  return db.getAllAsync<DebtEntry>(
+    'SELECT id, person_id, kind, amount, date, note, tx_id, settlement_id FROM debt_entries WHERE person_id = ? ORDER BY date DESC, id DESC',
+    personId,
   );
 }
 
-export function listDebtEntries(db: SQLiteDatabase, personId: number) {
-  return db.getAllAsync<DebtEntry>(
-    'SELECT id, person_id, kind, amount, date, note, tx_id FROM debt_entries WHERE person_id = ? ORDER BY date DESC, id DESC',
+/** The stretches that ended square with a person, newest first, with what moved each way. */
+export function listSettlements(db: SQLiteDatabase, personId: number) {
+  return db.getAllAsync<Settlement>(
+    `SELECT s.id, s.person_id, s.settled_on, COUNT(d.id) AS count,
+       COALESCE(SUM(CASE WHEN d.kind = 'lent' THEN d.amount END), 0) AS lent,
+       COALESCE(SUM(CASE WHEN d.kind = 'got_back' THEN d.amount END), 0) AS got_back,
+       COALESCE(SUM(CASE WHEN d.kind = 'borrowed' THEN d.amount END), 0) AS borrowed,
+       COALESCE(SUM(CASE WHEN d.kind = 'paid_back' THEN d.amount END), 0) AS paid_back
+     FROM debt_settlements s LEFT JOIN debt_entries d ON d.settlement_id = s.id
+     WHERE s.person_id = ? GROUP BY s.id ORDER BY s.settled_on DESC, s.id DESC`,
     personId,
   );
 }
@@ -732,7 +788,7 @@ export type CycleDebtEntry = DebtEntry & { person_name: string };
  */
 export function listDebtEntriesForCycle(db: SQLiteDatabase, cycle: Cycle) {
   return db.getAllAsync<CycleDebtEntry>(
-    `SELECT d.id, d.person_id, d.kind, d.amount, d.date, d.note, d.tx_id, p.name AS person_name
+    `SELECT d.id, d.person_id, d.kind, d.amount, d.date, d.note, d.tx_id, d.settlement_id, p.name AS person_name
      FROM debt_entries d
      JOIN people p ON p.id = d.person_id
      LEFT JOIN transactions t ON t.id = d.tx_id
@@ -765,19 +821,55 @@ export async function addDebtEntry(
   date: string,
   note?: string | null,
 ) {
-  await db.runAsync(
-    'INSERT INTO debt_entries (person_id, kind, amount, date, note, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    personId,
-    kind,
-    amount,
-    date,
-    clean(note),
-    new Date().toISOString(),
-  );
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      'INSERT INTO debt_entries (person_id, kind, amount, date, note, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      personId,
+      kind,
+      amount,
+      date,
+      clean(note),
+      new Date().toISOString(),
+    );
+    await settleDebts(db, [personId]);
+  });
+}
+
+/**
+ * Squares up with a person: records the payment that brings what is open to zero (they paid you back, or you paid
+ * them back), dated `date`. Everything up to then becomes their settled history and the next entry starts fresh.
+ * Returns the entry it recorded, or null if you were already square.
+ */
+export async function settleUp(db: SQLiteDatabase, personId: number, date: string = todayISO()) {
+  let recorded: { kind: DebtKind; amount: number } | null = null;
+  await db.withTransactionAsync(async () => {
+    const row = await db.getFirstAsync<{ net: number }>(
+      `SELECT COALESCE(SUM(${SIGNED_AMOUNT('d')}), 0) AS net FROM debt_entries d WHERE d.person_id = ?`,
+      personId,
+    );
+    const net = row?.net ?? 0;
+    if (net === 0) return;
+    recorded = { kind: net > 0 ? 'got_back' : 'paid_back', amount: Math.abs(net) };
+    await db.runAsync(
+      'INSERT INTO debt_entries (person_id, kind, amount, date, note, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      personId,
+      recorded.kind,
+      recorded.amount,
+      date,
+      'Settled up',
+      new Date().toISOString(),
+    );
+    await settleDebts(db, [personId]);
+  });
+  return recorded as { kind: DebtKind; amount: number } | null;
 }
 
 export async function deleteDebtEntry(db: SQLiteDatabase, id: number) {
-  await db.runAsync('DELETE FROM debt_entries WHERE id = ?', id);
+  await db.withTransactionAsync(async () => {
+    const entry = await db.getFirstAsync<{ person_id: number }>('SELECT person_id FROM debt_entries WHERE id = ?', id);
+    await db.runAsync('DELETE FROM debt_entries WHERE id = ?', id);
+    if (entry) await settleDebts(db, [entry.person_id]);
+  });
 }
 
 export async function deletePerson(db: SQLiteDatabase, id: number) {
@@ -811,13 +903,15 @@ const BACKUP_TABLES = {
   people: ['id', 'name'],
   tags: ['id', 'name', 'sort'],
   tx_tags: ['tx_id', 'tag_id'],
-  debt_entries: ['id', 'person_id', 'kind', 'amount', 'date', 'note', 'created_at', 'tx_id'],
+  debt_settlements: ['id', 'person_id', 'settled_on', 'created_at'],
+  debt_entries: ['id', 'person_id', 'kind', 'amount', 'date', 'note', 'created_at', 'tx_id', 'settlement_id'],
 } as const;
 
 /** Delete children before parents, insert parents before children. */
 const RESTORE_ORDER = [
   'tx_tags',
   'debt_entries',
+  'debt_settlements',
   'transactions',
   'quick_expenses',
   'people',
@@ -831,8 +925,11 @@ const RESTORE_ORDER = [
 /** Columns an older backup does not have, and what they start as. */
 const COLUMN_DEFAULTS: Record<string, string | number | null> = { card_cash: 0 };
 
-/** Version 2 added banks, 3 quick-adds, 4 tags, 5 POS purchases and the Credit → Debit category. Older backups still restore. */
-export type Backup = { app: 'finance-tracker'; version: 1 | 2 | 3 | 4 | 5; exportedAt: string } & Record<
+/**
+ * Version 2 added banks, 3 quick-adds, 4 tags, 5 POS purchases and the Credit → Debit category, 6 settled debt
+ * history. Older backups still restore.
+ */
+export type Backup = { app: 'finance-tracker'; version: 1 | 2 | 3 | 4 | 5 | 6; exportedAt: string } & Record<
   keyof typeof BACKUP_TABLES,
   Record<string, string | number | null>[]
 >;
@@ -844,19 +941,20 @@ export async function exportBackup(db: SQLiteDatabase): Promise<Backup> {
     const where = table === 'settings' ? " WHERE key NOT IN ('theme_mode', 'font_choice')" : '';
     data[table] = await db.getAllAsync(`SELECT * FROM ${table}${where}`);
   }
-  return { app: 'finance-tracker', version: 5, exportedAt: new Date().toISOString(), ...data } as Backup;
+  return { app: 'finance-tracker', version: 6, exportedAt: new Date().toISOString(), ...data } as Backup;
 }
 
 export async function restoreBackup(db: SQLiteDatabase, backup: unknown) {
   const b = backup as Partial<Backup>;
-  if (!b || b.app !== 'finance-tracker' || ![1, 2, 3, 4, 5].includes(b.version as number)) {
+  if (!b || b.app !== 'finance-tracker' || ![1, 2, 3, 4, 5, 6].includes(b.version as number)) {
     throw new Error('This is not a Finance Tracker backup file.');
   }
   for (const table of Object.keys(BACKUP_TABLES) as (keyof typeof BACKUP_TABLES)[]) {
     const optional =
       (table === 'banks' && b.version === 1) ||
       (table === 'quick_expenses' && b.version! < 3) ||
-      ((table === 'tags' || table === 'tx_tags') && b.version! < 4);
+      ((table === 'tags' || table === 'tx_tags') && b.version! < 4) ||
+      (table === 'debt_settlements' && b.version! < 6);
     if (!Array.isArray(b[table]) && !optional) throw new Error(`Backup is missing "${table}".`);
   }
 
@@ -882,5 +980,7 @@ export async function restoreBackup(db: SQLiteDatabase, backup: unknown) {
     await ensureQuickDefaults(db);
     // Older backups have withdrawals and no Credit → Debit category.
     await ensureCardCashCategory(db);
+    // Older backups have no settled history; anyone already square gets theirs now.
+    await settleDebts(db);
   });
 }

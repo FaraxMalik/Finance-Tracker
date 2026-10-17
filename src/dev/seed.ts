@@ -205,5 +205,7 @@ export async function seedDemo(db: SQLiteDatabase) {
   await q.addDebtEntry(db, ali, 'lent', R(15000), day(2), 'For the laptop deposit');
   await q.addDebtEntry(db, ali, 'got_back', R(3000), day(9));
   await q.addDebtEntry(db, sara, 'borrowed', R(5000), day(6), 'Dinner and cab');
-  await q.addDebtEntry(db, usman, 'lent', R(3500), day(12));
+  await q.addDebtEntry(db, usman, 'lent', R(3500), day(3), 'Concert tickets');
+  await q.addDebtEntry(db, usman, 'got_back', R(3500), day(7)); // square: this stretch becomes settled history
+  await q.addDebtEntry(db, usman, 'lent', R(1200), day(12), 'Lunch');
 }

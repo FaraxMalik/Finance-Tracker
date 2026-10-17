@@ -46,10 +46,9 @@ export default function DebtsScreen() {
 
   if (!data) return <Screen tabs>{null}</Screen>;
   const { totals, people, paidForFriends } = data;
-  const owed = (p: (typeof people)[number]) => (side === 'they' ? p.they_owe : p.i_owe);
-  const shown = people
-    .filter((p) => owed(p) > 0 || (p.they_owe === 0 && p.i_owe === 0))
-    .sort((a, b) => owed(b) - owed(a));
+  // Each person appears once, with what is left after both ways are netted: the same numbers the totals add up.
+  const owed = (p: (typeof people)[number]) => (side === 'they' ? Math.max(p.balance, 0) : Math.max(-p.balance, 0));
+  const shown = people.filter((p) => owed(p) > 0 || p.balance === 0).sort((a, b) => owed(b) - owed(a));
   const addPerson = async () => {
     if (!newName.trim()) return;
     await findOrCreatePerson(db, newName);
@@ -154,9 +153,7 @@ export default function DebtsScreen() {
                   <Txt numberOfLines={1} style={{ fontWeight: '600' }}>
                     {p.name}
                   </Txt>
-                  <Txt variant="small">
-                    {p.they_owe === 0 && p.i_owe === 0 ? 'settled' : side === 'they' ? 'owes you' : 'you owe'}
-                  </Txt>
+                  <Txt variant="small">{p.balance === 0 ? 'settled' : side === 'they' ? 'owes you' : 'you owe'}</Txt>
                 </View>
                 <Txt style={{ fontWeight: '600' }} color={side === 'they' ? c.income : c.danger}>
                   {formatPKR(owed(p))}

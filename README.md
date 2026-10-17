@@ -45,8 +45,11 @@ _Shown with demo data._
 - **Tags**: your own groups, such as a trip. Tag an expense while adding it, or hold an entry in All entries, select
   several and tag them together; the selection shows its own total. Each tag has its own total on Home, and All
   entries can filter by several tags at once.
-- **Debts**: switch between **They owe me** and **I owe them** to list people and amounts, with a history per person
-  for each side.
+- **Debts**: switch between **They owe me** and **I owe them** to list people and amounts. Each person is counted
+  once, by what is left after both ways are netted, so the list always adds up to the totals. A person's page shows
+  both sides, their **Current** entries and a **Settled history**: every time the two of you come out square (going
+  by date), those entries move there and new entries start fresh. **Settle up** records the payment that squares
+  you (they paid you back, or you paid them) in one tap and does exactly that.
 - **Monthly reports** as tables, exportable as CSV, and **backup / restore** to a JSON file.
 - **Light, dark or system theme** and four typefaces (DM Sans, Mono, Serif, Classic), all in Settings.
 

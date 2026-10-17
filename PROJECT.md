@@ -77,7 +77,8 @@ All money is stored as **integer paisa** (1 PKR = 100 paisa), never floats ([src
 | `transactions` | every entry: `type`, `amount`, `date`, `account_id` (category), `bank_id`, `place`, `source`, `note`, `channel` (`'pos'` on a POS purchase). `fee` is legacy and ignored |
 | `quick_expenses` | saved **Places** (Food, Fuel, ...) with a default category and bank |
 | `people` | friends / people in debts |
-| `debt_entries` | `lent`, `borrowed`, `got_back`, `paid_back`. `tx_id` links a friend's share to the entry it came from |
+| `debt_entries` | `lent`, `borrowed`, `got_back`, `paid_back`. `tx_id` links a friend's share to the entry it came from; `settlement_id` puts it in a settled stretch |
+| `debt_settlements` | one row per stretch with a person that ended square (`settled_on`). Rebuilt from the entries by `settleDebts` ([src/db/settle.ts](src/db/settle.ts)) after every debt change |
 | `tags`, `tx_tags` | user labels (a trip, office, ...) on any number of entries |
 
 Transaction types:
@@ -91,14 +92,14 @@ Transaction types:
 
 ### Migrations
 
-The schema is at **version 8** (`SCHEMA_VERSION` in [src/db/schema.ts](src/db/schema.ts)). `migrate()` runs on every
+The schema is at **version 9** (`SCHEMA_VERSION` in [src/db/schema.ts](src/db/schema.ts)). `migrate()` runs on every
 open and upgrades step by step: v1 base tables, v2 default categories, v3 banks split out of categories, v4 adds
 `card_withdrawal`, v5 places, v6 `debt_entries.tx_id`, v7 tags, v8 POS (`channel`), the Credit → Debit category
-(`card_cash`) and withdrawals folded into `card_swipe`. The root layout keys the `SQLiteProvider` on
+(`card_cash`) and withdrawals folded into `card_swipe`, v9 settled debt history. The root layout keys the `SQLiteProvider` on
 `SCHEMA_VERSION`, so a new migration runs even after a live reload. The README describes how to add one.
 
-Backups are JSON (format version 5) and older versions 1 to 4 still restore; a restore runs the same v8
-clean-up (`ensureCardCashCategory`).
+Backups are JSON (format version 6) and older versions 1 to 5 still restore; a restore runs the same clean-ups as
+the upgrades (`ensureCardCashCategory`, `settleDebts`).
 
 ## Money rules
 
@@ -122,7 +123,13 @@ on every screen is built on. Tests cover them.
   deletes its shares. Linked debts are edited through the entry, not on the person page.
 - **Income** is only income entries. Home's **With credit** tab adds this cycle's Credit → Debit to it (and to
   Left over) for display only; the choice is saved as the `income_view` setting.
-- **Debt balances:** they owe me = lent − got back; I owe them = borrowed − paid back.
+- **Debt balances:** a person's net = lent + paid back − borrowed − got back (positive: they owe you). The Debts
+  list and its totals both use the net, so each person is counted once. The two sides on their page (lent − got
+  back, borrowed − paid back) cover only open entries, and an overpayment moves to the other side, so the sides
+  always differ by exactly the net.
+- **Settled history:** going through a person's entries by date, each day the running balance ends at zero closes a
+  settled stretch. It is recomputed from the entries every time, so backdated entries and edits are always right.
+  **Settle up** (`settleUp`) adds the `got_back` / `paid_back` entry for the net, dated today, which closes a stretch.
 - **Tags** have their own totals but never change the main ones.
 
 ## Design direction

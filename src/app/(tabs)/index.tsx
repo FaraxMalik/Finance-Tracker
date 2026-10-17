@@ -68,15 +68,17 @@ export default function Dashboard() {
   const today = todayISO();
 
   const spentByDay = new Map(daily.map((d) => [d.date, d.total]));
+  // An entry can be dated before the cycle began (added late); start the chart there so the bars add up to the total.
+  const firstDay = daily.length && daily[0].date < cycle.start_date ? daily[0].date : cycle.start_date;
   const lastDay = today > end ? today : end;
-  const dayCount = diffDays(cycle.start_date, lastDay) + 1;
+  const dayCount = diffDays(firstDay, lastDay) + 1;
   const bars: Bar[] = Array.from({ length: dayCount }, (_, i) => {
-    const date = addDays(cycle.start_date, i);
+    const date = addDays(firstDay, i);
     return { key: date, value: spentByDay.get(date) ?? 0, highlight: date === today };
   });
   const labels: [string, string, string] = [
-    shortDate(cycle.start_date),
-    shortDate(addDays(cycle.start_date, Math.floor(dayCount / 2))),
+    shortDate(firstDay),
+    shortDate(addDays(firstDay, Math.floor(dayCount / 2))),
     shortDate(lastDay),
   ];
 

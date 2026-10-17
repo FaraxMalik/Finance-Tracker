@@ -1,5 +1,6 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 
+import { settleDebts } from '@/db/settle';
 import { currentCycleStart } from '@/lib/cycle';
 
 export const DB_NAME = 'finance-tracker.db';
@@ -11,7 +12,7 @@ export const DEFAULT_CYCLE_START_DAY = 5;
  * The root layout uses it as the database provider's key, so when a new migration arrives through a live
  * code reload (which does not restart the app) the database is reopened and the upgrade actually runs.
  */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 /** Spending categories, seeded on first launch. Only "Credit Card" counts as credit; the rest are debit. */
 const DEFAULT_ACCOUNTS: { name: string; kind: 'credit' | 'debit' }[] = [
@@ -305,6 +306,29 @@ export async function migrate(db: SQLiteDatabase) {
       }
       await ensureCardCashCategory(db);
       await db.execAsync('PRAGMA user_version = 8');
+    });
+  }
+  if (version < 9) {
+    await db.withTransactionAsync(async () => {
+      // Once everything with a person adds up to zero, those entries become their settled history.
+      await db.execAsync(`
+        CREATE TABLE IF NOT EXISTS debt_settlements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+          settled_on TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_settle_person ON debt_settlements(person_id);
+      `);
+      const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(debt_entries)');
+      if (!cols.some((c) => c.name === 'settlement_id')) {
+        await db.execAsync(
+          'ALTER TABLE debt_entries ADD COLUMN settlement_id INTEGER REFERENCES debt_settlements(id) ON DELETE SET NULL',
+        );
+      }
+      // People who are already square get their history filed as settled now.
+      await settleDebts(db);
+      await db.execAsync('PRAGMA user_version = 9');
     });
   }
 }

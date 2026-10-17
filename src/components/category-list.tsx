@@ -6,11 +6,12 @@ import { Spacing } from '@/constants/theme';
 import type { CategoryTotal } from '@/db/queries';
 import { useColors } from '@/hooks/use-theme';
 import { categoryColor } from '@/lib/labels';
-import { formatPKR } from '@/lib/money';
+import { formatPKR, percentShares } from '@/lib/money';
 
 /** Each category's own total and share, then the overall total underneath. */
 export function CategoryList({ breakdown, total }: { breakdown: CategoryTotal[]; total: number }) {
   const c = useColors();
+  const pct = percentShares(breakdown.map((b) => b.total));
   if (breakdown.length === 0) {
     return <Txt variant="dim">Nothing spent yet.</Txt>;
   }
@@ -20,14 +21,14 @@ export function CategoryList({ breakdown, total }: { breakdown: CategoryTotal[];
         segments={breakdown.map((b) => ({ value: b.total, color: categoryColor(b.name, b.kind, c, b.card_cash) }))}
       />
       <View style={{ gap: Spacing.three - 4 }}>
-        {breakdown.map((b) => (
+        {breakdown.map((b, i) => (
           <Row key={b.id ?? 'none'} style={{ gap: Spacing.two + 2 }}>
             <Dot color={categoryColor(b.name, b.kind, c, b.card_cash)} />
             <Txt style={{ flex: 1 }} numberOfLines={1}>
               {b.name}
             </Txt>
             <Txt variant="small" style={styles.pct}>
-              {total > 0 ? Math.round((b.total / total) * 100) : 0}%
+              {total > 0 ? pct[i] : 0}%
             </Txt>
             <Txt style={[styles.amount, { fontWeight: '600' }]}>{formatPKR(b.total)}</Txt>
           </Row>
