@@ -4,21 +4,8 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { useState, type ReactNode } from 'react';
 import { Alert, StyleSheet, View } from 'react-native';
 
-import { ArrowDownIcon, ArrowUpIcon, ChevronIcon, TrashIcon } from '@/components/icons';
-import {
-  Avatar,
-  Button,
-  Card,
-  Chip,
-  Empty,
-  ModalHeader,
-  Press,
-  Reveal,
-  Row,
-  Screen,
-  SectionTitle,
-  Txt,
-} from '@/components/ui';
+import { ArrowDownIcon, ArrowUpIcon, CheckIcon, ChevronIcon, TrashIcon } from '@/components/icons';
+import { Avatar, Button, Card, Chip, Empty, ModalHeader, Press, Reveal, Row, Screen, Txt } from '@/components/ui';
 import { Radius, Spacing, withAlpha, type Palette } from '@/constants/theme';
 import { useColors, useStyles } from '@/hooks/use-theme';
 import {
@@ -29,6 +16,7 @@ import {
   listSettlements,
   settleUp,
   type DebtEntry,
+  type DebtSide,
   type Settlement,
 } from '@/db/queries';
 import { useFocusLoad } from '@/hooks/use-focus-load';
@@ -79,18 +67,24 @@ export default function PersonScreen() {
       },
     ]);
 
-  const confirmSettle = () => {
-    const amount = formatPKR(Math.abs(person.balance));
+  /**
+   * Settles only one side: what they owe you, or what you owe them. The other side, if there is one, is left
+   * exactly as it was — you can owe a friend for one thing while they still owe you for another.
+   */
+  const confirmSettle = (settleSide: DebtSide) => {
+    const amount = formatPKR(settleSide === 'they' ? person.they_owe : person.i_owe);
+    const verb =
+      settleSide === 'they' ? `${person.name} paid you back ${amount}` : `You paid ${person.name} back ${amount}`;
     Alert.alert(
       `Settle up with ${person.name}?`,
-      `${person.balance > 0 ? `${person.name} paid you back ${amount}` : `You paid ${person.name} back ${amount}`}. ` +
-        'This is recorded for today, everything so far moves to Settled history, and new entries start from zero.',
+      `${verb}. This moves it to Settled history, and new entries start from zero.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Settle up',
           onPress: async () => {
-            await settleUp(db, personId);
+            await settleUp(db, personId, settleSide);
+            setChosen(settleSide);
             setTab('settled');
             reload();
           },
@@ -119,18 +113,13 @@ export default function PersonScreen() {
     );
 
   // Show the bigger side first unless a side was picked: what they owe me, or what I owe them.
-  const side = chosen ?? (person.i_owe > person.they_owe ? 'me' : 'they');
+  const side: DebtSide = chosen ?? (person.i_owe > person.they_owe ? 'me' : 'they');
   const open = entries.filter((e) => e.settlement_id === null);
-  // Paying back more than a side owed moves the extra to the other side (e.g. lent 1,000, got back 1,500: you owe
-  // them 500), so that side's list also shows the entries the extra came from.
-  const sum = (kinds: string[]) => open.filter((e) => kinds.includes(e.kind)).reduce((n, e) => n + e.amount, 0);
-  const theyRaw = sum(['lent']) - sum(['got_back']);
-  const meRaw = sum(['borrowed']) - sum(['paid_back']);
-  const sideKinds =
-    side === 'they'
-      ? ['lent', 'got_back', ...(meRaw < 0 ? ['borrowed', 'paid_back'] : [])]
-      : ['borrowed', 'paid_back', ...(theyRaw < 0 ? ['lent', 'got_back'] : [])];
+  const sideKinds = side === 'they' ? ['lent', 'got_back'] : ['borrowed', 'paid_back'];
   const shown = open.filter((e) => sideKinds.includes(e.kind));
+  const sideSettledOn = side === 'they' ? person.they_settled_on : person.i_settled_on;
+  // Settled history is scoped to whichever side is picked above, same as Current.
+  const sideSettlements = settlements.filter((st) => st.side === side);
   const tone = person.balance > 0 ? c.income : person.balance < 0 ? c.danger : c.textDim;
 
   const entryRow = (e: DebtEntry, last: boolean, canDelete: boolean) => {
@@ -219,23 +208,39 @@ export default function PersonScreen() {
       </Reveal>
 
       <Reveal index={i++}>
-        <Row>
+        <View style={{ gap: Spacing.two }}>
           <Button
             label="Add entry"
-            style={{ flex: 1 }}
             onPress={() => router.push({ pathname: '/debt-entry', params: { personId: String(personId) } })}
           />
-          {person.balance !== 0 ? (
-            <Button label="Settle up" variant="ghost" style={{ flex: 1 }} onPress={confirmSettle} />
+          {person.they_owe > 0 || person.i_owe > 0 ? (
+            <Row>
+              {person.they_owe > 0 ? (
+                <Button
+                  label={`Collect ${formatPKR(person.they_owe)}`}
+                  variant="ghost"
+                  style={{ flex: 1 }}
+                  onPress={() => confirmSettle('they')}
+                />
+              ) : null}
+              {person.i_owe > 0 ? (
+                <Button
+                  label={`Pay ${formatPKR(person.i_owe)}`}
+                  variant="ghost"
+                  style={{ flex: 1 }}
+                  onPress={() => confirmSettle('me')}
+                />
+              ) : null}
+            </Row>
           ) : null}
-        </Row>
+        </View>
       </Reveal>
 
       <Reveal index={i++}>
         <Row>
           <Chip label="Current" selected={tab === 'current'} onPress={() => setTab('current')} />
           <Chip
-            label={settlements.length ? `Settled history (${settlements.length})` : 'Settled history'}
+            label={sideSettlements.length ? `Settled history (${sideSettlements.length})` : 'Settled history'}
             selected={tab === 'settled'}
             onPress={() => setTab('settled')}
           />
@@ -247,8 +252,8 @@ export default function PersonScreen() {
           <Card style={{ paddingVertical: Spacing.one }}>
             {shown.length === 0 ? (
               <Empty>
-                {open.length === 0 && person.settled_on
-                  ? `All settled on ${longDate(person.settled_on)}. New entries start here.`
+                {sideSettledOn
+                  ? `Settled on ${longDate(sideSettledOn)}. New entries start here.`
                   : side === 'they'
                     ? 'Nothing lent to them yet.'
                     : 'Nothing borrowed from them yet.'}
@@ -258,16 +263,18 @@ export default function PersonScreen() {
             )}
           </Card>
         </Reveal>
-      ) : settlements.length === 0 ? (
+      ) : sideSettlements.length === 0 ? (
         <Reveal index={i++}>
           <Card>
             <Empty>
-              Nothing settled yet. When everything between you adds up to zero, it moves here and a fresh start begins.
+              {side === 'they'
+                ? 'Nothing settled yet. Once what they owe you comes back to zero, it moves here and a fresh start begins.'
+                : 'Nothing settled yet. Once what you owe them comes back to zero, it moves here and a fresh start begins.'}
             </Empty>
           </Card>
         </Reveal>
       ) : (
-        settlements.map((st) => (
+        sideSettlements.map((st) => (
           <Reveal key={st.id} index={i++}>
             <SettledGroup settlement={st} entries={entries.filter((e) => e.settlement_id === st.id)}>
               {(list) => list.map((e, n) => entryRow(e, n === list.length - 1, false))}
@@ -281,7 +288,7 @@ export default function PersonScreen() {
   );
 }
 
-/** One squared-up stretch: when it ended, what moved each way, and its entries (read-only). */
+/** One squared-up stretch for one side: when it ended, what moved, and its entries (read-only, dimmed). */
 function SettledGroup({
   settlement: st,
   entries,
@@ -291,19 +298,32 @@ function SettledGroup({
   entries: DebtEntry[];
   children: (list: DebtEntry[]) => ReactNode;
 }) {
-  const parts = [
-    st.lent ? `You lent ${formatPKR(st.lent)}` : null,
-    st.got_back ? `got back ${formatPKR(st.got_back)}` : null,
-    st.borrowed ? `you borrowed ${formatPKR(st.borrowed)}` : null,
-    st.paid_back ? `paid back ${formatPKR(st.paid_back)}` : null,
-  ].filter(Boolean);
+  const c = useColors();
+  const tint = st.side === 'they' ? c.income : c.danger;
+  const summary =
+    st.side === 'they'
+      ? `You lent ${formatPKR(st.lent)} · got back ${formatPKR(st.got_back)}`
+      : `You borrowed ${formatPKR(st.borrowed)} · paid back ${formatPKR(st.paid_back)}`;
   return (
     <View style={{ gap: Spacing.two }}>
-      <SectionTitle>{`Settled ${longDate(st.settled_on)}`}</SectionTitle>
+      <Row style={{ gap: 7 }}>
+        <View
+          style={{
+            width: 18,
+            height: 18,
+            borderRadius: 9,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: withAlpha(tint, 0.15),
+          }}>
+          <CheckIcon color={tint} size={11} strokeWidth={2.75} />
+        </View>
+        <Txt variant="small" style={{ fontWeight: '700' }}>{`Settled ${longDate(st.settled_on)}`}</Txt>
+      </Row>
       <Txt variant="small">
-        {parts.join(' · ')} · {st.count} {st.count === 1 ? 'entry' : 'entries'}
+        {summary} · {st.count} {st.count === 1 ? 'entry' : 'entries'}
       </Txt>
-      <Card style={{ paddingVertical: Spacing.one }}>{children(entries)}</Card>
+      <Card style={{ paddingVertical: Spacing.one, backgroundColor: c.bg }}>{children(entries)}</Card>
     </View>
   );
 }

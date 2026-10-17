@@ -370,7 +370,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     const { old, c } = await legacyPhone(1);
     await migrate(old);
     const v2 = JSON.parse(JSON.stringify(await q.exportBackup(old)));
-    assert.equal(v2.version, 6);
+    assert.equal(v2.version, 7);
     assert.ok(Array.isArray(v2.banks));
 
     // Build a genuine v1 file: legacy accounts, entries pointing at them, no banks table, no bank_id.
@@ -695,7 +695,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     await migrate(d);
     await q.addQuick(d, 'Rickshaw', null, null);
     const backup = JSON.parse(JSON.stringify(await q.exportBackup(d)));
-    assert.equal(backup.version, 6);
+    assert.equal(backup.version, 7);
     const d2 = makeDb();
     await migrate(d2);
     await q.restoreBackup(d2, backup);
@@ -1165,108 +1165,132 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     return { d, ali, sara, person };
   };
 
-  await test('debts: each person is counted once, by their net, so the list adds up to the totals', async () => {
+  await test('debts: each side is its own gross total; an overpayment is clamped, not moved to the other side', async () => {
     const { d, ali, sara, person } = await debtDb();
     await q.addDebtEntry(d, ali, 'lent', R(5000), '2026-10-10');
-    await q.addDebtEntry(d, ali, 'borrowed', R(2000), '2026-10-11');
+    await q.addDebtEntry(d, ali, 'borrowed', R(2000), '2026-10-11'); // unrelated to the 5000; both stay open
     await q.addDebtEntry(d, sara, 'lent', R(1000), '2026-10-10');
     await q.addDebtEntry(d, sara, 'got_back', R(1500), '2026-10-12'); // she paid back 500 too much
 
     const a = await person(ali);
-    assert.deepEqual([a.they_owe, a.i_owe, a.balance], [R(5000), R(2000), R(3000)], 'both sides, and the net');
+    assert.deepEqual([a.they_owe, a.i_owe, a.balance], [R(5000), R(2000), R(3000)], 'two separate debts, not netted');
     const sa = await person(sara);
-    assert.deepEqual([sa.they_owe, sa.i_owe, sa.balance], [0, R(500), -R(500)], 'overpaid: now you owe her');
+    assert.deepEqual(
+      [sa.they_owe, sa.i_owe, sa.balance],
+      [0, 0, 0],
+      'the extra 500 is not owed anywhere unless you record it yourself',
+    );
 
     const people = await q.listPeople(d);
     const t = await q.getDebtTotals(d);
-    const theyRows = people.reduce((sum, p) => sum + Math.max(p.balance, 0), 0);
-    const meRows = people.reduce((sum, p) => sum + Math.max(-p.balance, 0), 0);
-    assert.deepEqual([t.owedToMe, t.iOwe, t.net], [theyRows, meRows, theyRows - meRows]);
-    assert.deepEqual([t.owedToMe, t.iOwe], [R(3000), R(500)]);
-    for (const p of people) assert.equal(p.they_owe - p.i_owe, p.balance, 'the sides always match the net');
+    assert.deepEqual(
+      [t.owedToMe, t.iOwe, t.net],
+      [
+        people.reduce((s, p) => s + p.they_owe, 0),
+        people.reduce((s, p) => s + p.i_owe, 0),
+        people.reduce((s, p) => s + p.they_owe - p.i_owe, 0),
+      ],
+      'the totals are plain sums of the same numbers the Debts list shows',
+    );
+    assert.deepEqual([t.owedToMe, t.iOwe], [R(5000), R(2000)]);
   });
 
-  await test('debts: coming out square files the history as settled, and new entries start fresh', async () => {
+  await test('debts: settling one side never touches the other', async () => {
     const { d, ali, person } = await debtDb();
-    await q.addDebtEntry(d, ali, 'lent', R(1000), '2026-10-01');
-    assert.equal((await q.listSettlements(d, ali)).length, 0);
-    await q.addDebtEntry(d, ali, 'got_back', R(1000), '2026-10-05');
+    await q.addDebtEntry(d, ali, 'lent', R(3000), '2026-10-01');
+    await q.addDebtEntry(d, ali, 'borrowed', R(1000), '2026-10-02');
 
+    assert.deepEqual(await q.settleUp(d, ali, 'they', '2026-10-10'), { kind: 'got_back', amount: R(3000) });
     let p = await person(ali);
-    assert.deepEqual([p.they_owe, p.i_owe, p.balance, p.settled_on], [0, 0, 0, '2026-10-05']);
-    let settled = await q.listSettlements(d, ali);
     assert.deepEqual(
-      settled.map((x) => ({ ...x, id: 0, person_id: 0 })),
-      [
-        {
-          id: 0,
-          person_id: 0,
-          settled_on: '2026-10-05',
-          count: 2,
-          lent: R(1000),
-          got_back: R(1000),
-          borrowed: 0,
-          paid_back: 0,
-        },
-      ],
+      [p.they_owe, p.i_owe, p.they_settled_on, p.i_settled_on],
+      [0, R(1000), '2026-10-10', null],
+      'what they owe is settled; what you owe them is untouched',
     );
-    assert.ok((await q.listDebtEntries(d, ali)).every((e) => e.settlement_id === settled[0].id));
+    assert.deepEqual(
+      (await q.listSettlements(d, ali)).map((x) => x.side),
+      ['they'],
+    );
 
-    await q.addDebtEntry(d, ali, 'lent', R(300), '2026-10-08');
+    assert.deepEqual(await q.settleUp(d, ali, 'me', '2026-10-11'), { kind: 'paid_back', amount: R(1000) });
     p = await person(ali);
-    assert.deepEqual([p.they_owe, p.balance], [R(300), R(300)], 'only the new entry is open');
-    assert.equal((await q.listDebtEntries(d, ali)).filter((e) => e.settlement_id === null).length, 1);
-    assert.equal((await q.listSettlements(d, ali)).length, 1, 'the old stretch stays settled');
-
-    await q.addDebtEntry(d, ali, 'borrowed', R(300), '2026-10-09'); // square again, the other way round
-    settled = await q.listSettlements(d, ali);
+    assert.deepEqual([p.they_owe, p.i_owe, p.they_settled_on, p.i_settled_on], [0, 0, '2026-10-10', '2026-10-11']);
     assert.deepEqual(
-      settled.map((x) => [x.settled_on, x.count]),
-      [
-        ['2026-10-09', 2],
-        ['2026-10-05', 2],
-      ],
-      'newest first',
+      (await q.listSettlements(d, ali)).map((x) => x.side).sort(),
+      ['me', 'they'],
+      'each side has its own settlement',
     );
-    assert.equal((await q.getDebtTotals(d)).net, 0);
+
+    assert.equal(await q.settleUp(d, ali, 'they'), null, 'nothing open on that side');
   });
 
-  await test('debts: deleting an entry from a settled stretch reopens it, so nothing that counts is hidden', async () => {
+  await test('debts: a side settles on its own when its own running total returns to zero; the other side keeps going', async () => {
+    const { d, ali, person } = await debtDb();
+    await q.addDebtEntry(d, ali, 'lent', R(1000), '2026-10-01');
+    await q.addDebtEntry(d, ali, 'got_back', R(1000), '2026-10-05'); // "they" side comes back to zero
+    await q.addDebtEntry(d, ali, 'borrowed', R(400), '2026-10-05'); // "me" side still open, same day
+
+    assert.deepEqual(
+      (await q.listSettlements(d, ali)).map((x) => [x.side, x.settled_on]),
+      [['they', '2026-10-05']],
+    );
+    const p = await person(ali);
+    assert.deepEqual([p.they_owe, p.i_owe, p.they_settled_on, p.i_settled_on], [0, R(400), '2026-10-05', null]);
+  });
+
+  await test('debts: deleting an entry reopens only that side', async () => {
     const { d, ali, person } = await debtDb();
     await q.addDebtEntry(d, ali, 'lent', R(1000), '2026-10-01');
     await q.addDebtEntry(d, ali, 'got_back', R(1000), '2026-10-05');
-    await q.addDebtEntry(d, ali, 'lent', R(200), '2026-10-06');
-    const back = (await q.listDebtEntries(d, ali)).find((e) => e.kind === 'got_back')!;
-    await q.deleteDebtEntry(d, back.id);
-    assert.equal((await q.listSettlements(d, ali)).length, 0);
+    await q.addDebtEntry(d, ali, 'borrowed', R(400), '2026-10-05');
+    await q.addDebtEntry(d, ali, 'paid_back', R(400), '2026-10-06'); // "me" side settles too, separately
+    assert.equal((await q.listSettlements(d, ali)).length, 2);
+
+    const gotBack = (await q.listDebtEntries(d, ali)).find((e) => e.kind === 'got_back')!;
+    await q.deleteDebtEntry(d, gotBack.id);
+    const settled = await q.listSettlements(d, ali);
+    assert.deepEqual(
+      settled.map((x) => x.side),
+      ['me'],
+      'only the "they" stretch reopens; "me" stays settled',
+    );
     const p = await person(ali);
-    assert.deepEqual([p.they_owe, p.balance, p.settled_on], [R(1200), R(1200), null]);
-    assert.ok((await q.listDebtEntries(d, ali)).every((e) => e.settlement_id === null));
+    assert.deepEqual([p.they_owe, p.i_owe, p.they_settled_on], [R(1000), 0, null]);
+    assert.ok(
+      (await q.listDebtEntries(d, ali))
+        .filter((e) => e.kind === 'lent' || e.kind === 'got_back')
+        .every((e) => e.settlement_id === null),
+    );
   });
 
-  await test('debts: a friend’s share of an expense settles too; editing the expense keeps it settled', async () => {
+  await test('debts: a friend’s share of an expense is on the "they" side; settles and reopens independently of a "me" debt', async () => {
     const { d, ali, person } = await debtDb();
     const c = (await q.getActiveCycle(d))!;
     const others = (await q.listAccounts(d)).find((a) => a.name === 'Others')!.id;
     const exp = { type: 'expense' as const, amount: R(1500), account_id: others, date: '2026-10-02', place: 'Dinner' };
     const id = await q.addTransaction(d, c.id, { ...exp, shares: [{ person_id: ali, amount: R(500) }] });
     await q.addDebtEntry(d, ali, 'got_back', R(500), '2026-10-04');
-    assert.equal((await q.listSettlements(d, ali)).length, 1);
+    await q.addDebtEntry(d, ali, 'borrowed', R(900), '2026-10-04'); // a separate "me" debt, should not interact
+    assert.deepEqual(
+      (await q.listSettlements(d, ali)).map((x) => x.side),
+      ['they'],
+    );
+    assert.equal((await person(ali)).i_owe, R(900), 'the "me" side is untouched by the "they" settlement');
 
     // Editing the note re-saves the same share: still settled.
     await q.updateTransaction(d, id, { ...exp, note: 'with Ali', shares: [{ person_id: ali, amount: R(500) }] });
-    assert.equal((await q.listSettlements(d, ali)).length, 1);
-    assert.equal((await person(ali)).balance, 0);
+    assert.equal((await q.listSettlements(d, ali)).filter((x) => x.side === 'they').length, 1);
+    assert.equal((await person(ali)).they_owe, 0);
 
-    // Changing the share means it no longer adds up: reopened, and he overpaid by 100.
+    // Changing the share means it no longer adds up: the "they" side reopens, clamped (no cross-shift).
     await q.updateTransaction(d, id, { ...exp, shares: [{ person_id: ali, amount: R(400) }] });
-    assert.equal((await q.listSettlements(d, ali)).length, 0);
+    assert.equal((await q.listSettlements(d, ali)).filter((x) => x.side === 'they').length, 0);
     let p = await person(ali);
-    assert.deepEqual([p.they_owe, p.i_owe, p.balance], [0, R(100), -R(100)]);
+    assert.deepEqual([p.they_owe, p.i_owe], [0, R(900)]);
 
     await q.deleteTransaction(d, id);
     p = await person(ali);
-    assert.deepEqual([p.i_owe, p.balance], [R(500), -R(500)]);
+    assert.deepEqual([p.they_owe, p.i_owe], [0, R(900)]);
   });
 
   await test('debts: settling goes by date, so entries added out of order land in the right stretch', async () => {
@@ -1276,16 +1300,16 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     await q.addDebtEntry(d, ali, 'lent', R(3500), '2026-10-08');
     await q.addDebtEntry(d, ali, 'got_back', R(3500), '2026-10-12'); // square on the 12th
     assert.deepEqual(
-      (await q.listSettlements(d, ali)).map((x) => [x.settled_on, x.count, x.lent, x.got_back]),
-      [['2026-10-12', 2, R(3500), R(3500)]],
+      (await q.listSettlements(d, ali)).map((x) => [x.side, x.settled_on, x.count, x.lent, x.got_back]),
+      [['they', '2026-10-12', 2, R(3500), R(3500)]],
     );
     const p = await person(ali);
-    assert.deepEqual([p.they_owe, p.balance, p.settled_on], [R(2500), R(2500), '2026-10-12']);
+    assert.deepEqual([p.they_owe, p.they_settled_on], [R(2500), '2026-10-12']);
 
     // A backdated entry inside the settled stretch means it was not square after all.
-    await q.addDebtEntry(d, ali, 'borrowed', R(400), '2026-10-10');
+    await q.addDebtEntry(d, ali, 'lent', R(400), '2026-10-10');
     assert.equal((await q.listSettlements(d, ali)).length, 0);
-    assert.equal((await person(ali)).balance, R(2100));
+    assert.equal((await person(ali)).they_owe, R(2900));
   });
 
   await test('debts: only the end of a day counts as square (not halfway through the day)', async () => {
@@ -1296,7 +1320,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     assert.equal((await q.listSettlements(d, ali)).length, 0);
   });
 
-  await test('settle up: records the squaring payment either way, files the history, starts fresh', async () => {
+  await test('settle up: either side, in one tap; settling never changes your spending', async () => {
     const { d, ali, sara, person } = await debtDb();
     const c = (await q.getActiveCycle(d))!;
     const others = (await q.listAccounts(d)).find((a) => a.name === 'Others')!.id;
@@ -1312,39 +1336,39 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     await q.addDebtEntry(d, ali, 'got_back', R(500), '2026-10-03');
     const spentBefore = (await q.getCycleTotals(d, c.id)).totalSpent;
 
-    assert.deepEqual(await q.settleUp(d, ali, '2026-10-10'), { kind: 'got_back', amount: R(3100) });
+    assert.deepEqual(await q.settleUp(d, ali, 'they', '2026-10-10'), { kind: 'got_back', amount: R(3100) });
     let p = await person(ali);
-    assert.deepEqual([p.balance, p.they_owe, p.i_owe, p.settled_on], [0, 0, 0, '2026-10-10']);
+    assert.deepEqual([p.they_owe, p.they_settled_on], [0, '2026-10-10']);
     const settled = await q.listSettlements(d, ali);
     assert.deepEqual(
-      settled.map((x) => [x.settled_on, x.count, x.lent, x.got_back]),
-      [['2026-10-10', 4, R(3600), R(3600)]],
-      'everything so far, the share and the squaring payment included',
+      settled.map((x) => [x.side, x.settled_on, x.count, x.lent, x.got_back]),
+      [['they', '2026-10-10', 4, R(3600), R(3600)]],
+      'everything so far on that side, the share and the squaring payment included',
     );
     const last = (await q.listDebtEntries(d, ali))[0];
     assert.deepEqual([last.kind, last.amount, last.note], ['got_back', R(3100), 'Settled up']);
     assert.equal((await q.getCycleTotals(d, c.id)).totalSpent, spentBefore, 'settling never changes your spending');
 
-    // New entries start fresh.
+    // New entries on that side start fresh.
     await q.addDebtEntry(d, ali, 'lent', R(250), '2026-10-12');
     p = await person(ali);
-    assert.deepEqual([p.they_owe, p.balance], [R(250), R(250)]);
-    assert.equal((await q.listDebtEntries(d, ali)).filter((e) => e.settlement_id === null).length, 1);
+    assert.deepEqual([p.they_owe, p.i_owe], [R(250), 0]);
 
-    // You owe Sara: settling records that you paid her back.
+    // You owe Sara: settling that side records that you paid her back.
     await q.addDebtEntry(d, sara, 'borrowed', R(900), '2026-10-05');
-    assert.deepEqual(await q.settleUp(d, sara, '2026-10-11'), { kind: 'paid_back', amount: R(900) });
-    assert.equal((await person(sara)).balance, 0);
+    assert.deepEqual(await q.settleUp(d, sara, 'me', '2026-10-11'), { kind: 'paid_back', amount: R(900) });
+    assert.equal((await person(sara)).i_owe, 0);
     assert.equal((await q.listSettlements(d, sara)).length, 1);
-    assert.equal(await q.settleUp(d, sara), null, 'already square: nothing recorded');
+    assert.equal(await q.settleUp(d, sara, 'me'), null, 'already square: nothing recorded');
+    assert.equal(await q.settleUp(d, sara, 'they'), null, 'nothing was ever owed on that side');
     assert.equal((await q.getDebtTotals(d)).net, R(250));
   });
 
-  await test('upgrade v8 -> v9 files people who are already square as settled, leaves the rest open', async () => {
+  await test('migrate from v8 straight to the current version in one run: settlements land correctly per side', async () => {
     const { d, ali, sara, person } = await debtDb();
     await q.addDebtEntry(d, ali, 'lent', R(700), '2026-09-01');
-    await q.addDebtEntry(d, ali, 'got_back', R(700), '2026-09-03');
-    await q.addDebtEntry(d, sara, 'borrowed', R(250), '2026-09-02');
+    await q.addDebtEntry(d, ali, 'got_back', R(700), '2026-09-03'); // square on the "they" side
+    await q.addDebtEntry(d, sara, 'borrowed', R(250), '2026-09-02'); // still open
     await d.execAsync(`
       UPDATE debt_entries SET settlement_id = NULL;
       ALTER TABLE debt_entries DROP COLUMN settlement_id;
@@ -1355,15 +1379,33 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     await migrate(d);
     assert.equal(((await d.getFirstAsync('PRAGMA user_version')) as any).user_version, SCHEMA_VERSION);
     assert.deepEqual(
-      (await q.listSettlements(d, ali)).map((x) => [x.settled_on, x.count]),
-      [['2026-09-03', 2]],
+      (await q.listSettlements(d, ali)).map((x) => [x.side, x.settled_on, x.count]),
+      [['they', '2026-09-03', 2]],
     );
     assert.equal((await q.listSettlements(d, sara)).length, 0);
     assert.equal((await person(sara)).i_owe, R(250));
     assert.equal(((await d.getFirstAsync('SELECT COUNT(*) AS n FROM debt_entries')) as any).n, 3, 'nothing lost');
   });
 
-  await test('backups carry settled history; an older backup (none) gets it filled in on restore', async () => {
+  await test('upgrade v9 -> v10: an existing combined settlement is split by side', async () => {
+    const { d, ali, person } = await debtDb();
+    await q.addDebtEntry(d, ali, 'lent', R(700), '2026-09-01');
+    await q.addDebtEntry(d, ali, 'got_back', R(700), '2026-09-03'); // "they" square
+    await q.addDebtEntry(d, ali, 'borrowed', R(400), '2026-09-05');
+    await q.addDebtEntry(d, ali, 'paid_back', R(400), '2026-09-06'); // "me" square too, on a later day
+    // Drop back to the v9 shape: no side column.
+    await d.execAsync(`ALTER TABLE debt_settlements DROP COLUMN side; PRAGMA user_version = 9;`);
+    await migrate(d);
+    assert.equal(((await d.getFirstAsync('PRAGMA user_version')) as any).user_version, SCHEMA_VERSION);
+    assert.deepEqual((await q.listSettlements(d, ali)).map((x) => [x.side, x.settled_on]).sort(), [
+      ['me', '2026-09-06'],
+      ['they', '2026-09-03'],
+    ]);
+    const p = await person(ali);
+    assert.deepEqual([p.they_owe, p.i_owe], [0, 0]);
+  });
+
+  await test('backups carry settled history per side; an older backup (none) gets it filled in on restore', async () => {
     const { d, ali, sara } = await debtDb();
     await q.addDebtEntry(d, ali, 'lent', R(700), '2026-09-01');
     await q.addDebtEntry(d, ali, 'got_back', R(700), '2026-09-03');
@@ -1371,6 +1413,7 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     await q.addDebtEntry(d, sara, 'borrowed', R(250), '2026-09-02');
     const backup = JSON.parse(JSON.stringify(await q.exportBackup(d)));
     assert.equal(backup.debt_settlements.length, 1);
+    assert.equal(backup.debt_settlements[0].side, 'they');
 
     const d2 = makeDb();
     await migrate(d2);
@@ -1382,15 +1425,15 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
     const stretches = async (db: any) => (await q.listSettlements(db, ali)).map(({ id, ...x }) => ({ ...x }));
     assert.deepEqual(await stretches(d2), await stretches(d));
 
-    const v5 = { ...backup, version: 5 };
-    delete v5.debt_settlements;
-    v5.debt_entries = backup.debt_entries.map(({ settlement_id, ...e }: any) => e);
+    const v6 = { ...backup, version: 6 };
+    v6.debt_settlements = backup.debt_settlements.map(({ side, ...s }: any) => s);
+    v6.debt_entries = backup.debt_entries.map(({ settlement_id, ...e }: any) => e);
     const d3 = makeDb();
     await migrate(d3);
-    await q.restoreBackup(d3, v5);
-    // Ali was square on 3 Sep, so the stretch before it is settled and only the later 100 is open.
+    await q.restoreBackup(d3, v6);
+    // Ali's "they" side was square on 3 Sep, so that stretch is settled and only the later 100 is open.
     const p = (await q.getPerson(d3, ali))!;
-    assert.deepEqual([p.they_owe, p.balance, p.settled_on], [R(100), R(100), '2026-09-03']);
+    assert.deepEqual([p.they_owe, p.they_settled_on], [R(100), '2026-09-03']);
     assert.equal((await q.listDebtEntries(d3, ali)).filter((e) => e.settlement_id === null).length, 1);
   });
 
@@ -1536,7 +1579,9 @@ const test = async (name: string, fn: () => Promise<void> | void) => {
 
     await q.deleteTransaction(d, id);
     assert.equal((await q.listDebtEntries(d, ali)).filter((e) => e.kind === 'lent').length, 0);
-    assert.equal((await q.getPerson(d, ali))!.balance, -R(300), 'only their payment is left, so you owe it back');
+    // Their "got back" entry is still there, but the "they" side it belonged to just clamps to zero: a side
+    // never goes negative and is never moved onto the other one, so this stays "they owe 0", not "you owe them".
+    assert.deepEqual([(await q.getPerson(d, ali))!.they_owe, (await q.getPerson(d, ali))!.balance], [0, 0]);
   });
 
   await test('paying for friends: list totals, CSV columns and backup all use your share', async () => {

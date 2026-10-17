@@ -46,9 +46,13 @@ export default function DebtsScreen() {
 
   if (!data) return <Screen tabs>{null}</Screen>;
   const { totals, people, paidForFriends } = data;
-  // Each person appears once, with what is left after both ways are netted: the same numbers the totals add up.
-  const owed = (p: (typeof people)[number]) => (side === 'they' ? Math.max(p.balance, 0) : Math.max(-p.balance, 0));
-  const shown = people.filter((p) => owed(p) > 0 || p.balance === 0).sort((a, b) => owed(b) - owed(a));
+  // What they owe and what you owe them are tracked separately, so a person can be on both lists at once, each
+  // with its own amount; these always add up to the totals above because both are plain sums of the same numbers.
+  const owed = (p: (typeof people)[number]) => (side === 'they' ? p.they_owe : p.i_owe);
+  const other = (p: (typeof people)[number]) => (side === 'they' ? p.i_owe : p.they_owe);
+  const shown = people
+    .filter((p) => owed(p) > 0 || (p.they_owe === 0 && p.i_owe === 0))
+    .sort((a, b) => owed(b) - owed(a));
   const addPerson = async () => {
     if (!newName.trim()) return;
     await findOrCreatePerson(db, newName);
@@ -153,11 +157,20 @@ export default function DebtsScreen() {
                   <Txt numberOfLines={1} style={{ fontWeight: '600' }}>
                     {p.name}
                   </Txt>
-                  <Txt variant="small">{p.balance === 0 ? 'settled' : side === 'they' ? 'owes you' : 'you owe'}</Txt>
+                  <Txt variant="small">
+                    {p.they_owe === 0 && p.i_owe === 0 ? 'settled' : side === 'they' ? 'owes you' : 'you owe'}
+                  </Txt>
                 </View>
-                <Txt style={{ fontWeight: '600' }} color={side === 'they' ? c.income : c.danger}>
-                  {formatPKR(owed(p))}
-                </Txt>
+                <View style={{ alignItems: 'flex-end', gap: 2 }}>
+                  <Txt style={{ fontWeight: '600' }} color={side === 'they' ? c.income : c.danger}>
+                    {formatPKR(owed(p))}
+                  </Txt>
+                  {other(p) > 0 ? (
+                    <Txt variant="small" numberOfLines={1}>
+                      {side === 'they' ? `you owe ${formatPKR(other(p))}` : `owes you ${formatPKR(other(p))}`}
+                    </Txt>
+                  ) : null}
+                </View>
                 <ChevronIcon color={c.textDim} size={16} />
               </Press>
             ))

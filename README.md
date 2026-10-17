@@ -12,8 +12,8 @@ It is not on the Play Store, so Android will ask you to allow installing from yo
 
 ## Screenshots
 
-| Home | Credit card | All entries | Dark mode |
-| :---: | :---: | :---: | :---: |
+|                                                Home                                                |                                Credit card                                |                                   All entries                                   |                                  Dark mode                                  |
+| :------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------: | :-----------------------------------------------------------------------------: | :-------------------------------------------------------------------------: |
 | <img src="docs/shots/home.webp" width="190" alt="Home: total spent, split by category and bank" /> | <img src="docs/shots/credit.webp" width="190" alt="Credit card screen" /> | <img src="docs/shots/all.webp" width="190" alt="All entries, grouped by day" /> | <img src="docs/shots/home-dark.webp" width="190" alt="Home in dark mode" /> |
 
 _Shown with demo data._
@@ -45,11 +45,12 @@ _Shown with demo data._
 - **Tags**: your own groups, such as a trip. Tag an expense while adding it, or hold an entry in All entries, select
   several and tag them together; the selection shows its own total. Each tag has its own total on Home, and All
   entries can filter by several tags at once.
-- **Debts**: switch between **They owe me** and **I owe them** to list people and amounts. Each person is counted
-  once, by what is left after both ways are netted, so the list always adds up to the totals. A person's page shows
-  both sides, their **Current** entries and a **Settled history**: every time the two of you come out square (going
-  by date), those entries move there and new entries start fresh. **Settle up** records the payment that squares
-  you (they paid you back, or you paid them) in one tap and does exactly that.
+- **Debts**: switch between **They owe me** and **I owe them** to list people and amounts. What someone owes you
+  and what you owe them are kept as two separate amounts, so the same person can show up on both lists at once (a
+  small note under their amount shows the other side), and both lists always add up to the totals above them. A
+  person's page shows both sides with their own **Current** entries and **Settled history**: every time one side
+  comes out square (going by date), that side's entries move there and new entries on it start fresh — the other
+  side, if any, is untouched. **Settle up** records the payment that squares one side in one tap.
 - **Monthly reports** as tables, exportable as CSV, and **backup / restore** to a JSON file.
 - **Light, dark or system theme** and four typefaces (DM Sans, Mono, Serif, Classic), all in Settings.
 
@@ -97,16 +98,16 @@ Go is the real thing (the native date picker, haptics and fonts behave different
 
 ## Scripts
 
-| Command                | What it does                                                          |
-| ---------------------- | --------------------------------------------------------------------- |
-| `npm start`            | Start the dev server for Expo Go                                      |
-| `npm run phone`        | Same, over a tunnel (works on any network)                            |
-| `npm run web`          | Run in a browser                                                      |
-| `npm run typecheck`    | TypeScript, strict mode                                               |
-| `npm run lint`         | ESLint (`eslint-config-expo`)                                         |
-| `npm run format`       | Format with Prettier (`npm run format:check` only reports)            |
-| `npm test`             | Database, money-rule and filter tests (see below)                     |
-| `npm run check`        | Type-check + lint + format check + tests, the same as CI              |
+| Command             | What it does                                               |
+| ------------------- | ---------------------------------------------------------- |
+| `npm start`         | Start the dev server for Expo Go                           |
+| `npm run phone`     | Same, over a tunnel (works on any network)                 |
+| `npm run web`       | Run in a browser                                           |
+| `npm run typecheck` | TypeScript, strict mode                                    |
+| `npm run lint`      | ESLint (`eslint-config-expo`)                              |
+| `npm run format`    | Format with Prettier (`npm run format:check` only reports) |
+| `npm test`          | Database, money-rule and filter tests (see below)          |
+| `npm run check`     | Type-check + lint + format check + tests, the same as CI   |
 
 ## Project structure
 

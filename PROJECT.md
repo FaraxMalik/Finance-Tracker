@@ -18,14 +18,14 @@ It is built around how its owner actually uses money:
   so the money lands in the bank, then spent from there). The card bill is paid later from salary.
 - **Paying for friends** and tracking **debts** both ways.
 
-| | |
-| --- | --- |
-| Platform | Android only (APK sideloaded, min Android 7). Runs in Expo Go during development. |
-| Stack | Expo SDK 57, React Native 0.86, React 19 (React Compiler on), Expo Router, expo-sqlite, TypeScript strict |
-| App id | `com.faraz.financetracker` |
-| Repo | https://github.com/FaraxMalik/Finance-Tracker (git root is `app/`) |
-| Website | https://faraxmalik.github.io/Finance-Tracker/ (from `docs/`) |
-| Current version | 1.3.0 (`app.json`), tagged `v1.3.0` at `HEAD` |
+|                 |                                                                                                           |
+| --------------- | --------------------------------------------------------------------------------------------------------- |
+| Platform        | Android only (APK sideloaded, min Android 7). Runs in Expo Go during development.                         |
+| Stack           | Expo SDK 57, React Native 0.86, React 19 (React Compiler on), Expo Router, expo-sqlite, TypeScript strict |
+| App id          | `com.faraz.financetracker`                                                                                |
+| Repo            | https://github.com/FaraxMalik/Finance-Tracker (git root is `app/`)                                        |
+| Website         | https://faraxmalik.github.io/Finance-Tracker/ (from `docs/`)                                              |
+| Current version | 1.3.0 (`app.json`), tagged `v1.3.0` at `HEAD`                                                             |
 
 ## Code map
 
@@ -68,37 +68,38 @@ deliberately left out of backups (they belong to the phone, not the data).
 
 All money is stored as **integer paisa** (1 PKR = 100 paisa), never floats ([src/lib/money.ts](src/lib/money.ts)).
 
-| Table | Holds |
-| --- | --- |
-| `settings` | key/value: `cycle_start_day`, `credit_limit`, `card_opening_balance`, `theme_mode`, `font_choice` |
-| `accounts` | **categories** (the name is historical). `kind` is `credit` or `debit`. `card_cash = 1` marks Credit → Debit |
-| `banks` | banks and wallets the money moved through |
-| `cycles` | one row per billing cycle; the open one has `closed_at IS NULL`. Closing stores snapshots of card owed and debts |
-| `transactions` | every entry: `type`, `amount`, `date`, `account_id` (category), `bank_id`, `place`, `source`, `note`, `channel` (`'pos'` on a POS purchase). `fee` is legacy and ignored |
-| `quick_expenses` | saved **Places** (Food, Fuel, ...) with a default category and bank |
-| `people` | friends / people in debts |
-| `debt_entries` | `lent`, `borrowed`, `got_back`, `paid_back`. `tx_id` links a friend's share to the entry it came from; `settlement_id` puts it in a settled stretch |
-| `debt_settlements` | one row per stretch with a person that ended square (`settled_on`). Rebuilt from the entries by `settleDebts` ([src/db/settle.ts](src/db/settle.ts)) after every debt change |
-| `tags`, `tx_tags` | user labels (a trip, office, ...) on any number of entries |
+| Table              | Holds                                                                                                                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `settings`         | key/value: `cycle_start_day`, `credit_limit`, `card_opening_balance`, `theme_mode`, `font_choice`                                                                                             |
+| `accounts`         | **categories** (the name is historical). `kind` is `credit` or `debit`. `card_cash = 1` marks Credit → Debit                                                                                  |
+| `banks`            | banks and wallets the money moved through                                                                                                                                                     |
+| `cycles`           | one row per billing cycle; the open one has `closed_at IS NULL`. Closing stores snapshots of card owed and debts                                                                              |
+| `transactions`     | every entry: `type`, `amount`, `date`, `account_id` (category), `bank_id`, `place`, `source`, `note`, `channel` (`'pos'` on a POS purchase). `fee` is legacy and ignored                      |
+| `quick_expenses`   | saved **Places** (Food, Fuel, ...) with a default category and bank                                                                                                                           |
+| `people`           | friends / people in debts                                                                                                                                                                     |
+| `debt_entries`     | `lent`, `borrowed`, `got_back`, `paid_back`. `tx_id` links a friend's share to the entry it came from; `settlement_id` puts it in a settled stretch                                           |
+| `debt_settlements` | one row per stretch of one `side` ('they' or 'me') that ended square (`settled_on`). Rebuilt from the entries by `settleDebts` ([src/db/settle.ts](src/db/settle.ts)) after every debt change |
+| `tags`, `tx_tags`  | user labels (a trip, office, ...) on any number of entries                                                                                                                                    |
 
 Transaction types:
 
-| `type` | Meaning | Category | Bank |
-| --- | --- | --- | --- |
-| `expense` | money spent. With the Credit Card category it is a card purchase: **POS** if `channel = 'pos'`, else **Online** | yes | yes, except card purchases |
-| `income` | Salary / Project / Other (kept in `source`) | no | optional |
-| `card_swipe` | **Credit → Debit**: card → bank. Raises card owed, never spending, hidden from Home and entry lists | no | no |
-| `card_payment` | paying the card bill. A transfer, never spending | no | no |
+| `type`         | Meaning                                                                                                         | Category | Bank                       |
+| -------------- | --------------------------------------------------------------------------------------------------------------- | -------- | -------------------------- |
+| `expense`      | money spent. With the Credit Card category it is a card purchase: **POS** if `channel = 'pos'`, else **Online** | yes      | yes, except card purchases |
+| `income`       | Salary / Project / Other (kept in `source`)                                                                     | no       | optional                   |
+| `card_swipe`   | **Credit → Debit**: card → bank. Raises card owed, never spending, hidden from Home and entry lists             | no       | no                         |
+| `card_payment` | paying the card bill. A transfer, never spending                                                                | no       | no                         |
 
 ### Migrations
 
-The schema is at **version 9** (`SCHEMA_VERSION` in [src/db/schema.ts](src/db/schema.ts)). `migrate()` runs on every
+The schema is at **version 10** (`SCHEMA_VERSION` in [src/db/schema.ts](src/db/schema.ts)). `migrate()` runs on every
 open and upgrades step by step: v1 base tables, v2 default categories, v3 banks split out of categories, v4 adds
 `card_withdrawal`, v5 places, v6 `debt_entries.tx_id`, v7 tags, v8 POS (`channel`), the Credit → Debit category
-(`card_cash`) and withdrawals folded into `card_swipe`, v9 settled debt history. The root layout keys the `SQLiteProvider` on
+(`card_cash`) and withdrawals folded into `card_swipe`, v9 settled debt history, v10 settling "they owe me" and "I
+owe them" as two separate histories instead of one net figure. The root layout keys the `SQLiteProvider` on
 `SCHEMA_VERSION`, so a new migration runs even after a live reload. The README describes how to add one.
 
-Backups are JSON (format version 6) and older versions 1 to 5 still restore; a restore runs the same clean-ups as
+Backups are JSON (format version 7) and older versions 1 to 6 still restore; a restore runs the same clean-ups as
 the upgrades (`ensureCardCashCategory`, `settleDebts`).
 
 ## Money rules
@@ -123,13 +124,18 @@ on every screen is built on. Tests cover them.
   deletes its shares. Linked debts are edited through the entry, not on the person page.
 - **Income** is only income entries. Home's **With credit** tab adds this cycle's Credit → Debit to it (and to
   Left over) for display only; the choice is saved as the `income_view` setting.
-- **Debt balances:** a person's net = lent + paid back − borrowed − got back (positive: they owe you). The Debts
-  list and its totals both use the net, so each person is counted once. The two sides on their page (lent − got
-  back, borrowed − paid back) cover only open entries, and an overpayment moves to the other side, so the sides
-  always differ by exactly the net.
-- **Settled history:** going through a person's entries by date, each day the running balance ends at zero closes a
-  settled stretch. It is recomputed from the entries every time, so backdated entries and edits are always right.
-  **Settle up** (`settleUp`) adds the `got_back` / `paid_back` entry for the net, dated today, which closes a stretch.
+- **Debt balances:** `they_owe` (lent − got back) and `i_owe` (borrowed − paid back) are two fully independent
+  totals per person, each clamped at 0 and never moved onto the other — lending for one thing and borrowing for
+  another are different arrangements, so an overpayment on one side is just clamped, not shifted across. `balance`
+  (`they_owe - i_owe`) is only a display figure; nothing is filtered or settled by it. The Debts list and its
+  per-tab totals both sum the same `they_owe`/`i_owe` values, so a person can appear on both tabs at once and the
+  list always adds up to the header.
+- **Settled history, per side:** `settleDebts` ([src/db/settle.ts](src/db/settle.ts)) processes "they" (lent/got
+  back) and "me" (borrowed/paid back) as two independent streams. Going through one side's entries by date, each
+  day its running total ends at zero closes a settled stretch on that side; the other side keeps going regardless.
+  It is recomputed from the entries every time, so backdated entries and edits always land right. **Settle up**
+  (`settleUp(db, personId, side)`) adds the closing `got_back` / `paid_back` entry for just that side's open
+  amount, dated today.
 - **Tags** have their own totals but never change the main ones.
 
 ## Design direction

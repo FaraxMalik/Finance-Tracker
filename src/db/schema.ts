@@ -12,7 +12,7 @@ export const DEFAULT_CYCLE_START_DAY = 5;
  * The root layout uses it as the database provider's key, so when a new migration arrives through a live
  * code reload (which does not restart the app) the database is reopened and the upgrade actually runs.
  */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /** Spending categories, seeded on first launch. Only "Credit Card" counts as credit; the rest are debit. */
 const DEFAULT_ACCOUNTS: { name: string; kind: 'credit' | 'debit' }[] = [
@@ -311,10 +311,13 @@ export async function migrate(db: SQLiteDatabase) {
   if (version < 9) {
     await db.withTransactionAsync(async () => {
       // Once everything with a person adds up to zero, those entries become their settled history.
+      // (`side` belongs to the very next migration, but a fresh install runs both in one go, so it is included
+      // here too; `settleDebts` always needs it. An existing v9 phone gets it from the version-10 block below.)
       await db.execAsync(`
         CREATE TABLE IF NOT EXISTS debt_settlements (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+          side TEXT NOT NULL DEFAULT 'they',
           settled_on TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
@@ -329,6 +332,19 @@ export async function migrate(db: SQLiteDatabase) {
       // People who are already square get their history filed as settled now.
       await settleDebts(db);
       await db.execAsync('PRAGMA user_version = 9');
+    });
+  }
+  if (version < 10) {
+    await db.withTransactionAsync(async () => {
+      // What they owe you and what you owe them settle separately now (lending for one thing and borrowing for
+      // another are different arrangements), so a settled stretch belongs to one side.
+      const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(debt_settlements)');
+      if (!cols.some((c) => c.name === 'side')) {
+        await db.execAsync("ALTER TABLE debt_settlements ADD COLUMN side TEXT NOT NULL DEFAULT 'they'");
+      }
+      // Rebuilds every settlement from the entries under the new per-side rule.
+      await settleDebts(db);
+      await db.execAsync('PRAGMA user_version = 10');
     });
   }
 }
